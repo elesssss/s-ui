@@ -401,8 +401,8 @@ export default {
       // Use previous data. Types that do not listen must not carry the listen
       // settings over, sing-box rejects them as unknown fields.
       const prevConfig = noListen
-        ? { id: this.inbound.id, tag: tag }
-        : { id: this.inbound.id, tag: tag, listen: this.inbound.listen?? "::", listen_port: this.inbound.listen_port }
+        ? { id: this.inbound.id, tag: tag, enable: this.inbound.enable }
+        : { id: this.inbound.id, tag: tag, enable: this.inbound.enable, listen: this.inbound.listen?? "::", listen_port: this.inbound.listen_port }
       this.inbound = createInbound(this.inbound.type, prevConfig)
       if (this.HasInData.includes(this.inbound.type)){
         this.inbound.addrs = []

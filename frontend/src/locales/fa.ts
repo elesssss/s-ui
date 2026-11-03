@@ -132,6 +132,7 @@ export default {
     value: "مقدار",
   },
   actions: {
+    toggle: "تغییر وضعیت",
     action: "فرمان",
     add: "ایجاد",
     addbulk: "ایجاد انبوه",

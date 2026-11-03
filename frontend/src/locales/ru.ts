@@ -132,6 +132,7 @@ export default {
     value: "Значение",
   },
   actions: {
+    toggle: "Переключить",
     action: "Действие",
     add: "Добавить",
     addbulk: "Добавить пакетно",

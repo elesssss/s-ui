@@ -114,6 +114,29 @@
                 />
               </v-col>
             </v-row>
+            <v-row
+              v-for="(l, index) in l2tpLinks"
+              :key="'l2tp-' + index"
+            >
+              <v-col style="text-align: center;">
+                <v-chip>{{ l.remark }}</v-chip><br>
+                <QrcodeVue
+                  :value="l.uri"
+                  :size="size"
+                  :margin="1"
+                  :aria-label="$t('l2tp.copyConnectionInfo')"
+                  role="button"
+                  tabindex="0"
+                  style="border-radius: .5rem; cursor: copy;"
+                  @click="copyToClipboard(l.uri)"
+                  @keydown.enter.prevent="copyToClipboard(l.uri)"
+                  @keydown.space.prevent="copyToClipboard(l.uri)"
+                />
+                <p class="text-caption mt-2">
+                  {{ $t('l2tp.copyConnectionInfo') }}
+                </p>
+              </v-col>
+            </v-row>
           </v-window-item>
         </v-window>
       </v-card-text>
@@ -128,6 +151,8 @@ import Clipboard from 'clipboard'
 import { i18n } from '@/locales'
 import { push } from 'notivue'
 import { Client } from '@/types/clients'
+import type { Inbound } from '@/types/inbounds'
+import { l2tpConnectionLinks } from '@/plugins/l2tpConnection'
 
 export default {
   components: { QrcodeVue },
@@ -140,6 +165,8 @@ export default {
     return {
       tab: "sub",
       client: <Client>{},
+      inbounds: [] as Inbound[],
+      loadVersion: 0,
       loading: false,
     }
   },
@@ -154,6 +181,9 @@ export default {
     clientLinks() {
       return this.client.links?? []
     },
+    l2tpLinks() {
+      return l2tpConnectionLinks(this.client, this.inbounds, key => this.$t(key))
+    },
     size() {
       if (window.innerWidth > 380) return 300
       if (window.innerWidth > 330) return 280
@@ -165,15 +195,31 @@ export default {
       if (v) {
         this.tab = "sub"
         this.load()
+      } else {
+        this.loadVersion++
+        this.client = <Client>{}
+        this.inbounds = []
       }
     },
   },
   methods: {
     async load() {
+      const version = ++this.loadVersion
       this.loading = true
-      const newData = await Data().loadClients(this.$props.id)
-      this.client = newData
-      this.loading = false
+      this.client = <Client>{}
+      this.inbounds = []
+      try {
+        const client = await Data().loadClients(this.$props.id)
+        if (version !== this.loadVersion) return
+        this.client = client
+        // An empty ID list would fetch every inbound; only fetch bindings.
+        if (client.inbounds?.length) {
+          const inbounds = await Data().loadInbounds(client.inbounds)
+          if (version === this.loadVersion) this.inbounds = inbounds
+        }
+      } finally {
+        if (version === this.loadVersion) this.loading = false
+      }
     },
     copyToClipboard(txt:string) {
       const hiddenButton = document.createElement('button')

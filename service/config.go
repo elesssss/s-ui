@@ -363,6 +363,21 @@ func (s *ConfigService) Save(obj string, act string, data json.RawMessage, initU
 	if obj == "config" || obj == "outbounds" {
 		return s.savePolicy(obj, act, data, loginUser)
 	}
+	if obj == "inbounds" {
+		var runtime inboundRuntime
+		if corePtr.GetInstance() != nil {
+			runtime = corePtr
+		}
+		objs, err = s.InboundService.saveAndApply(database.GetDB(), runtime, act, data, initUsers, loginUser, hostname)
+		if err != nil {
+			return nil, err
+		}
+		LastUpdate.Store(time.Now().Unix())
+		if !corePtr.IsRunning() {
+			err = s.startCoreLocked(false)
+		}
+		return objs, err
+	}
 	objs = []string{obj}
 	tx := database.GetDB().Begin()
 	if tx.Error != nil {
@@ -400,9 +415,6 @@ func (s *ConfigService) Save(obj string, act string, data json.RawMessage, initU
 	case "tls":
 		err = s.TlsService.Save(tx, act, data, hostname)
 		objs = append(objs, "clients", "inbounds")
-	case "inbounds":
-		err = s.InboundService.Save(tx, act, data, initUsers, hostname)
-		objs = append(objs, "clients")
 	case "services":
 		err = s.ServicesService.Save(tx, act, data)
 	case "endpoints":

@@ -132,6 +132,7 @@ export default {
     value: "Giá trị",
   },
   actions: {
+    toggle: "Bật/tắt",
     action: "Hành động",
     add: "Thêm",
     addbulk: "Thêm Hàng loạt",

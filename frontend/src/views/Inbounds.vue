@@ -53,7 +53,6 @@
       >
         <template #append>
           <v-switch
-            v-if="item.type !== 'l2tp'"
             :model-value="item.enable !== false"
             :loading="toggling[item.id]"
             :disabled="toggling[item.id]"
@@ -277,14 +276,13 @@ const delInbound = async (id: number) => {
 const toggling = ref<Record<number, boolean>>({})
 
 const toggleEnable = async (item: Inbound, val: boolean) => {
-  if ((item.enable !== false) === val) return
+  if (toggling.value[item.id] || (item.enable !== false) === val) return
   toggling.value = { ...toggling.value, [item.id]: true }
-  const full = (await Data().loadInbounds([item.id]))[0]
-  if (full?.id) {
-    full.enable = val
-    await Data().save("inbounds", "edit", full)
+  try {
+    await Data().save("inbounds", "toggle", { id: item.id, enable: val })
+  } finally {
+    toggling.value = { ...toggling.value, [item.id]: false }
   }
-  toggling.value = { ...toggling.value, [item.id]: false }
 }
 
 let cloneLoading = ref(false)

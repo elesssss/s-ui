@@ -2,6 +2,7 @@ package model
 
 import (
 	"encoding/json"
+	"fmt"
 )
 
 type Inbound struct {
@@ -32,11 +33,6 @@ func (i *Inbound) UnmarshalJSON(data []byte) error {
 	delete(raw, "id")
 	i.Type, _ = raw["type"].(string)
 	delete(raw, "type")
-	// Older transplanted builds stored an L2TP-only enable flag. The source
-	// protocol has no such option; discard it without changing other inbounds.
-	if i.Type == "l2tp" {
-		delete(raw, "enable")
-	}
 	i.Tag, _ = raw["tag"].(string)
 	delete(raw, "tag")
 
@@ -58,6 +54,41 @@ func (i *Inbound) UnmarshalJSON(data []byte) error {
 
 	// Remaining fields
 	i.Options, err = json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		return err
+	}
+	_, err = i.IsEnabled()
+	return err
+}
+
+// Enable is panel metadata stored in Options. Existing inbounds without the
+// field (or with null) remain enabled; sing-box never receives this field.
+func (i Inbound) IsEnabled() (bool, error) {
+	if len(i.Options) == 0 {
+		return true, nil
+	}
+	var fields struct {
+		Enable *bool `json:"enable"`
+	}
+	if err := json.Unmarshal(i.Options, &fields); err != nil {
+		return false, fmt.Errorf("inbound %q enable: %w", i.Tag, err)
+	}
+	return fields.Enable == nil || *fields.Enable, nil
+}
+
+func (i *Inbound) SetEnabled(enabled bool) error {
+	fields := make(map[string]json.RawMessage)
+	if len(i.Options) > 0 {
+		if err := json.Unmarshal(i.Options, &fields); err != nil {
+			return err
+		}
+	}
+	if fields == nil {
+		fields = make(map[string]json.RawMessage)
+	}
+	fields["enable"], _ = json.Marshal(enabled)
+	var err error
+	i.Options, err = json.MarshalIndent(fields, "", "  ")
 	return err
 }
 
@@ -71,7 +102,7 @@ func (i Inbound) MarshalJSON() ([]byte, error) {
 		combined["tls"] = i.Tls.Server
 	}
 
-	if i.Options != nil {
+	if len(i.Options) > 0 {
 		var restFields map[string]json.RawMessage
 		if err := json.Unmarshal(i.Options, &restFields); err != nil {
 			return nil, err
@@ -82,9 +113,7 @@ func (i Inbound) MarshalJSON() ([]byte, error) {
 		}
 	}
 
-	if i.Type == "l2tp" {
-		delete(combined, "enable")
-	}
+	delete(combined, "enable")
 	return json.Marshal(combined)
 }
 
@@ -97,7 +126,7 @@ func (i Inbound) MarshalFull() (*map[string]interface{}, error) {
 	combined["addrs"] = i.Addrs
 	combined["out_json"] = i.OutJson
 
-	if i.Options != nil {
+	if len(i.Options) > 0 {
 		var restFields map[string]interface{}
 		if err := json.Unmarshal(i.Options, &restFields); err != nil {
 			return nil, err
@@ -107,8 +136,10 @@ func (i Inbound) MarshalFull() (*map[string]interface{}, error) {
 			combined[k] = v
 		}
 	}
-	if i.Type == "l2tp" {
-		delete(combined, "enable")
+	enabled, err := i.IsEnabled()
+	if err != nil {
+		return nil, err
 	}
+	combined["enable"] = enabled
 	return &combined, nil
 }

@@ -54,6 +54,10 @@ func (s *InboundService) GetAll() (*[]map[string]interface{}, error) {
 	}
 	var data []map[string]interface{}
 	for _, inbound := range inbounds {
+		enabled, err := inbound.IsEnabled()
+		if err != nil {
+			return nil, err
+		}
 		var shadowtls_version uint
 		ss_managed := false
 		inbData := map[string]interface{}{
@@ -61,6 +65,7 @@ func (s *InboundService) GetAll() (*[]map[string]interface{}, error) {
 			"type":   inbound.Type,
 			"tag":    inbound.Tag,
 			"tls_id": inbound.TlsId,
+			"enable": enabled,
 		}
 		if inbound.Options != nil {
 			var restFields map[string]json.RawMessage
@@ -102,6 +107,8 @@ func (s *InboundService) FromIds(ids []uint) ([]*model.Inbound, error) {
 	return inbounds, nil
 }
 
+// Save writes the database portion. ConfigService coordinates the runtime
+// change and restores the previous listener if the transaction cannot commit.
 func (s *InboundService) Save(tx *gorm.DB, act string, data json.RawMessage, initUserIds string, hostname string) error {
 	var err error
 
@@ -126,34 +133,6 @@ func (s *InboundService) Save(tx *gorm.DB, act string, data json.RawMessage, ini
 			}
 		}
 
-		if corePtr.IsRunning() {
-			if act == "edit" {
-				err = corePtr.RemoveInbound(oldTag)
-				if err != nil && err != os.ErrInvalid {
-					return err
-				}
-			}
-
-			inboundConfig, err := inbound.MarshalJSON()
-			if err != nil {
-				return err
-			}
-
-			if act == "edit" {
-				inboundConfig, err = s.addUsers(tx, inboundConfig, inbound.Id, inbound.Type)
-			} else {
-				inboundConfig, err = s.initUsers(tx, inboundConfig, initUserIds, inbound.Type)
-			}
-			if err != nil {
-				return err
-			}
-
-			err = corePtr.AddInbound(inboundConfig)
-			if err != nil {
-				return err
-			}
-		}
-
 		err = util.FillOutJson(&inbound, hostname)
 		if err != nil {
 			return err
@@ -172,17 +151,30 @@ func (s *InboundService) Save(tx *gorm.DB, act string, data json.RawMessage, ini
 		if err != nil {
 			return err
 		}
+	case "toggle":
+		var toggle struct {
+			Id     uint  `json:"id"`
+			Enable *bool `json:"enable"`
+		}
+		if err = json.Unmarshal(data, &toggle); err != nil {
+			return err
+		}
+		if toggle.Id == 0 || toggle.Enable == nil {
+			return common.NewError("inbound id and boolean enable are required")
+		}
+		var inbound model.Inbound
+		if err = tx.First(&inbound, toggle.Id).Error; err != nil {
+			return err
+		}
+		if err = inbound.SetEnabled(*toggle.Enable); err != nil {
+			return err
+		}
+		return tx.Model(&inbound).Update("options", inbound.Options).Error
 	case "del":
 		var tag string
 		err = json.Unmarshal(data, &tag)
 		if err != nil {
 			return err
-		}
-		if corePtr.IsRunning() {
-			err = corePtr.RemoveInbound(tag)
-			if err != nil && err != os.ErrInvalid {
-				return err
-			}
 		}
 		var id uint
 		err = tx.Model(model.Inbound{}).Select("id").Where("tag = ?", tag).Scan(&id).Error
@@ -225,8 +217,7 @@ func (s *InboundService) UpdateOutJsons(tx *gorm.DB, inboundIds []uint, hostname
 
 func (s *InboundService) GetAllConfig(db *gorm.DB) ([]json.RawMessage, error) {
 	var inboundsJson []json.RawMessage
-	var inbounds []*model.Inbound
-	err := db.Model(model.Inbound{}).Preload("Tls").Find(&inbounds).Error
+	inbounds, err := s.enabledInbounds(db, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -242,6 +233,31 @@ func (s *InboundService) GetAllConfig(db *gorm.DB) ([]json.RawMessage, error) {
 		inboundsJson = append(inboundsJson, inboundJson)
 	}
 	return inboundsJson, nil
+}
+
+// All paths that start or update listeners use this selection, so a user or
+// TLS change cannot bring a disabled inbound back online. Nil selects all;
+// an empty, non-nil ID list selects none.
+func (s *InboundService) enabledInbounds(db *gorm.DB, ids []uint) ([]*model.Inbound, error) {
+	var inbounds []*model.Inbound
+	query := db.Model(model.Inbound{}).Preload("Tls")
+	if ids != nil {
+		query = query.Where("id in ?", ids)
+	}
+	if err := query.Find(&inbounds).Error; err != nil {
+		return nil, err
+	}
+	active := make([]*model.Inbound, 0, len(inbounds))
+	for _, inbound := range inbounds {
+		enabled, err := inbound.IsEnabled()
+		if err != nil {
+			return nil, err
+		}
+		if enabled {
+			active = append(active, inbound)
+		}
+	}
+	return active, nil
 }
 
 func (s *InboundService) hasUser(inboundType string) bool {
@@ -377,8 +393,10 @@ func (s *InboundService) UpdateInboundsUsers(tx *gorm.DB, ids []uint) error {
 	if box == nil {
 		return nil
 	}
-	var inbounds []*model.Inbound
-	err := tx.Model(model.Inbound{}).Preload("Tls").Where("id in ?", ids).Find(&inbounds).Error
+	if len(ids) == 0 {
+		return nil
+	}
+	inbounds, err := s.enabledInbounds(tx, ids)
 	if err != nil {
 		return err
 	}
@@ -427,8 +445,10 @@ func (s *InboundService) RestartInbounds(tx *gorm.DB, ids []uint) error {
 	if box == nil {
 		return nil
 	}
-	var inbounds []*model.Inbound
-	err := tx.Model(model.Inbound{}).Preload("Tls").Where("id in ?", ids).Find(&inbounds).Error
+	if len(ids) == 0 {
+		return nil
+	}
+	inbounds, err := s.enabledInbounds(tx, ids)
 	if err != nil {
 		return err
 	}

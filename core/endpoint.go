@@ -44,7 +44,13 @@ func (c *Core) RemoveInbound(tag string) error {
 		return err
 	}
 	logger.Info("remove inbound: ", tag)
-	return box.inbound.Remove(tag)
+	err = box.inbound.Remove(tag)
+	// Listener shutdown alone does not close already routed connections.
+	// A missing listener can still have sessions left from an earlier edit.
+	if box.sessionTracker != nil {
+		box.sessionTracker.CloseByInbound(tag)
+	}
+	return err
 }
 
 func (c *Core) AddOutbound(config []byte) error {

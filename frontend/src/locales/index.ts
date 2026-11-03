@@ -8,7 +8,7 @@ import ru from './ru'
 
 export const i18n = createI18n({
   legacy: false,
-  locale: localStorage.getItem("locale") ?? 'en',
+  locale: localStorage.getItem("locale") ?? 'zhHans',
   fallbackLocale: 'en',
   messages: {
     en: en,
@@ -20,8 +20,8 @@ export const i18n = createI18n({
   },
 })
 
-// Screen readers pick their voice from the page language, and index.html can
-// only say "en". A locale change reloads the page, so setting it once is enough.
+// Screen readers pick their voice from the page language. A locale change
+// reloads the page, so setting it once to the active locale is enough.
 document.documentElement.lang = ({ zhHans: 'zh-Hans', zhHant: 'zh-Hant' } as Record<string, string>)[i18n.global.locale.value] ?? i18n.global.locale.value
 
 export const locale = (() => {
