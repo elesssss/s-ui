@@ -1,152 +1,162 @@
 # S-UI
 
-### L2TP/IPsec in this checkout
+### 本版本的 L2TP/IPsec 功能
 
-This checkout adds the L2TP adapter from [wanan9999/s-ui](https://github.com/wanan9999/s-ui), using the pinned [wanan9999/veepin](https://github.com/wanan9999/veepin) library. It retains the upstream frontend theme and layout.
+本版本移植了 [wanan9999/s-ui](https://github.com/wanan9999/s-ui) 的 L2TP 适配器，使用固定版本的 [wanan9999/veepin](https://github.com/wanan9999/veepin) 库，并保留原版前端的主题和布局。
 
-1. Build on Linux using the existing build profiles, which include gVisor. Add an inbound of type **L2TP/IPsec**.
-2. Set the server public IPv4 and IPsec pre-shared key. Defaults are `0.0.0.0:500` and client pool `10.20.0.0/24`; the pool must be a private IPv4 `/16` through `/29` subnet.
-3. In **Clients**, set the user's L2TP password and associate the user with this inbound. Existing users need their user form saved once to add L2TP credentials. Disabling the L2TP inbound, or having no enabled users with L2TP credentials, stops it from listening.
-4. Allow UDP **500** and **4500**. Public UDP 1701 is not needed. The server does not require strongSwan, xl2tpd, pppd, `/dev/net/tun`, host NAT or forwarding rules.
-5. Configure the OS/router VPN client manually with the public IPv4, PSK, user name and password. L2TP is excluded from sing-box and Clash subscriptions.
+1. 在 Linux 上使用现有构建配置编译，这些配置包含 gVisor 支持。添加类型为 **L2TP/IPsec** 的入站。
+2. 设置服务器公网 IPv4 地址和 IPsec 预共享密钥（PSK）。默认监听地址为 `0.0.0.0:500`，客户端地址池为 `10.20.0.0/24`；地址池必须是前缀长度介于 `/16` 和 `/29` 之间的私有 IPv4 子网。
+3. 在**用户管理**中设置用户的 L2TP 密码，并将用户绑定到该入站。已有用户需要打开用户编辑表单并保存一次，以补充 L2TP 凭据。关闭 L2TP 入站，或没有启用且具备 L2TP 凭据的用户时，入站不会监听。
+4. 放行 UDP **500** 和 **4500** 端口，无需对公网开放 UDP 1701。服务端无需安装 strongSwan、xl2tpd 或 pppd，也不依赖 `/dev/net/tun`、主机 NAT 或转发规则。
+5. 在操作系统或路由器的 VPN 客户端中手动填写公网 IPv4 地址、PSK、用户名和密码。L2TP 不包含在 sing-box 和 Clash 订阅中。
 
-Each authenticated session forwards IPv4 TCP/UDP through sing-box with the user's identity, so existing traffic limits and `auth_user` routing rules apply. ICMP and IPv6 forwarding are not supported. Configure clients to block traffic outside the tunnel, including IPv6.
+每个通过认证的会话都会携带用户身份，经由 sing-box 转发 IPv4 TCP/UDP 流量，因此现有流量限制和 `auth_user` 路由规则同样适用。目前不支持 ICMP 和 IPv6 转发。请在客户端配置中阻止隧道外的流量，包括 IPv6 流量。
 
-To use the panel's DNS configuration, configure DNS servers and place a `hijack-dns` rule for destination port 53 before general route rules. An empty DNS server list still allows sing-box's implicit system DNS; DNS hijacking does not control tunnel-external traffic or client DoH.
+如需使用面板中的 DNS 配置，请配置 DNS 服务器，并在常规路由规则之前添加一条针对目标端口 53 的 `hijack-dns` 规则。DNS 服务器列表为空时，sing-box 仍可使用隐式的系统 DNS；DNS 劫持无法控制隧道外的流量或客户端的 DoH 请求。
 
-DNS, route/rule-set, HTTP client and outbound configuration saves use policy hot reload. In supported configurations, they keep the L2TP listener, IKE/IPsec/PPP session and gVisor device alive. DNS-only changes keep ordinary TCP/UDP connections; existing DNS channels use the new policy on their next query. Route/HTTP client changes close business connections, and outbound changes close connections using the affected dependency chain; clients can establish new connections without redialling the VPN.
+保存 DNS、路由及规则集、HTTP 客户端和出站配置时，会使用策略热更新。在支持的配置下，更新过程会保留 L2TP 监听器、IKE/IPsec/PPP 拨号会话和 gVisor 设备。仅修改 DNS 时，普通 TCP/UDP 连接会保留，现有 DNS 通道会在下一次查询时使用新策略。修改路由或 HTTP 客户端配置会关闭业务连接；修改出站配置会关闭使用受影响依赖链的连接。客户端可以建立新的业务连接，无需重新拨号。
 
-Policy preparation happens before the database commit, and publication happens afterwards. Preparation or storage failure returns an error and keeps the old policy running. Saves wait for in-flight lifecycle operations. Hot reload currently rejects TUN, endpoints/core services, certificate providers/core APIs, enabled NTP and persistent core cache. Changes to other global settings (including logging, certificates and namespaces) require stopping the core first. In maintenance mode, saves validate and persist configuration without starting the core.
+新策略会在数据库提交前完成准备，并在提交后生效。准备或保存失败时，会返回错误并继续运行旧策略。保存操作会等待正在进行的核心启动、停止等操作完成。目前，配置中包含 TUN、端点、核心服务、证书提供程序、核心 API、已启用的 NTP 或持久化核心缓存时，不支持策略热更新。修改其他全局设置（包括日志、证书和命名空间）前，需要先停止核心。维护模式下，保存操作只校验并写入配置，不会启动核心。
 
-Account changes still rebuild the affected inbound and disconnect its sessions. Listener failures are detected by the existing core watchdog; maintenance mode prevents automatic recovery. The server adapter is supported on Linux; other upstream platforms retain their existing protocols.
+修改用户账号仍会重建受影响的入站，并断开该入站的会话。现有核心看门狗会检测监听器故障；维护模式会阻止自动恢复。L2TP 服务端适配器支持 Linux，其他原版支持的平台继续使用其已有协议。
 
-The package includes tests for session identity, TCP/UDP forwarding, negotiated MTU, logs, scope cleanup and credential selection. The Test workflow also runs policy failure/ownership regressions and the full PPP/IPsec pipeline in an isolated Linux network namespace, including DNS and routing changes over the same dial-up session. These test definitions do not imply they have already passed on this checkout. Real Windows/router client compatibility and long-running rekey sessions require separate acceptance testing.
-**An Advanced Web Panel • Built on SagerNet/Sing-Box**
+项目包含会话身份、TCP/UDP 转发、MTU 协商、日志、资源作用域清理和凭据选择等测试。Test 工作流还会在隔离的 Linux 网络命名空间中运行策略失败处理、资源归属回归测试，以及完整的 PPP/IPsec 流程测试，其中包括在同一拨号会话中修改 DNS 和路由。这些测试的存在不代表它们已经在当前代码版本中全部通过。实际 Windows 或路由器客户端的兼容性，以及长时间运行中的密钥更新会话，需要另行验收。
+
+**基于 SagerNet/Sing-Box 的高级 Web 管理面板**
 
 ![](https://img.shields.io/github/v/release/bryet/s-ui.svg)
-![S-UI Docker pull](https://img.shields.io/docker/pulls/alireza7/s-ui.svg)
+![S-UI Docker 拉取次数](https://img.shields.io/docker/pulls/alireza7/s-ui.svg)
 [![Go Report Card](https://goreportcard.com/badge/github.com/bryet/s-ui)](https://goreportcard.com/report/github.com/bryet/s-ui)
-[![Downloads](https://img.shields.io/github/downloads/bryet/s-ui/total.svg)](https://img.shields.io/github/downloads/bryet/s-ui/total.svg)
-[![License](https://img.shields.io/badge/license-GPL%20V3-blue.svg?longCache=true)](https://www.gnu.org/licenses/gpl-3.0.en.html)
+[![下载次数](https://img.shields.io/github/downloads/bryet/s-ui/total.svg)](https://img.shields.io/github/downloads/bryet/s-ui/total.svg)
+[![许可证](https://img.shields.io/badge/license-GPL%20V3-blue.svg?longCache=true)](https://www.gnu.org/licenses/gpl-3.0.en.html)
 
-> **Disclaimer:** This project is only for personal learning and communication, please do not use it for illegal purposes, please do not use it in a production environment
+> **免责声明：** 本项目仅用于个人学习和交流，请勿用于非法用途，也请勿在生产环境中使用。
 
-**If you think this project is helpful to you, you may wish to give a**:star2:
+**如果本项目对你有帮助，欢迎点亮一颗星** :star2:
 
-**Want to contribute?** See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, coding conventions, testing, and the pull request process.
+**参与贡献：** 请参阅 [CONTRIBUTING.md](CONTRIBUTING.md)，了解开发环境配置、代码规范、测试和 Pull Request 流程。
 
-[!["Buy Me A Coffee"](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)](https://www.buymeacoffee.com/alireza7)
+[![请作者喝杯咖啡](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)](https://www.buymeacoffee.com/alireza7)
 
 <a href="https://nowpayments.io/donation/alireza7" target="_blank" rel="noreferrer noopener">
-   <img src="https://nowpayments.io/images/embeds/donation-button-white.svg" alt="Crypto donation button by NOWPayments">
+   <img src="https://nowpayments.io/images/embeds/donation-button-white.svg" alt="通过 NOWPayments 捐赠加密货币">
 </a>
 
-## Quick Overview
-| Features                               |      Enable?       |
-| -------------------------------------- | :----------------: |
-| Multi-Protocol                         | :heavy_check_mark: |
-| Multi-Language                         | :heavy_check_mark: |
-| Multi-Client/Inbound                   | :heavy_check_mark: |
-| Advanced Traffic Routing Interface     | :heavy_check_mark: |
-| Client & Traffic & System Status       | :heavy_check_mark: |
-| Subscription Link (link/json/clash + info)| :heavy_check_mark: |
-| Dark/Light Theme                       | :heavy_check_mark: |
-| API Interface                          | :heavy_check_mark: |
+## 功能概览
 
-## Supported Platforms
-| Platform | Architecture | Status |
-|----------|--------------|---------|
-| Linux    | amd64, arm64, armv7, armv6, armv5, 386, s390x | ✅ Supported |
-| Windows  | amd64, 386, arm64 | ✅ Supported |
-| macOS    | amd64, arm64 | 🚧 Experimental |
+| 功能 | 是否支持 |
+|------|:--------:|
+| 多协议 | :heavy_check_mark: |
+| 多语言 | :heavy_check_mark: |
+| 多用户和多入站 | :heavy_check_mark: |
+| 高级流量路由配置界面 | :heavy_check_mark: |
+| 用户、流量和系统状态 | :heavy_check_mark: |
+| 订阅链接（link/json/clash 及订阅信息） | :heavy_check_mark: |
+| 深色和浅色主题 | :heavy_check_mark: |
+| API 接口 | :heavy_check_mark: |
 
-## Screenshots
+## 支持的平台
 
-!["Main"](https://github.com/bryet/s-ui-frontend/raw/main/media/main.png)
+| 平台 | 架构 | 状态 |
+|------|------|------|
+| Linux | amd64, arm64, armv7, armv6, armv5, 386, s390x | ✅ 支持 |
+| Windows | amd64, 386, arm64 | ✅ 支持 |
+| macOS | amd64, arm64 | 🚧 实验性支持 |
 
-[Other UI Screenshots](https://github.com/bryet/s-ui-frontend/blob/main/screenshots.md)
+## 界面截图
 
-## Documentation
+![主界面](https://github.com/bryet/s-ui-frontend/raw/main/media/main.png)
 
-Full documentation lives in the [Wiki](https://github.com/bryet/s-ui/wiki):
+[查看其他界面截图](https://github.com/bryet/s-ui-frontend/blob/main/screenshots.md)
 
-| Page | Contents |
+## 文档
+
+完整文档位于 [Wiki](https://github.com/bryet/s-ui/wiki)：
+
+| 页面 | 内容 |
 |------|----------|
-| [Subscription Service](https://github.com/bryet/s-ui/wiki/Subscription-Service) | Subscription URLs, the three formats, response headers |
-| [Subscription JSON Template](https://github.com/bryet/s-ui/wiki/Subscription-JSON-Template) | Structure and supported keys of the sing-box subscription template |
-| [Subscription Clash Template](https://github.com/bryet/s-ui/wiki/Subscription-Clash-Template) | The Clash.Meta template, proxy groups and filters |
-| [API Documentation](https://github.com/bryet/s-ui/wiki/API-Documentation) | The token-authenticated REST API (`/apiv2`) |
-| [Configuration Objects](https://github.com/bryet/s-ui/wiki/Configuration-Objects) | Shape of the objects read and written through the API |
-| [Settings Reference](https://github.com/bryet/s-ui/wiki/Settings-Reference) | Every panel setting and its default |
+| [订阅服务](https://github.com/bryet/s-ui/wiki/Subscription-Service) | 订阅 URL、三种订阅格式和响应头 |
+| [JSON 订阅模板](https://github.com/bryet/s-ui/wiki/Subscription-JSON-Template) | sing-box 订阅模板的结构和支持的字段 |
+| [Clash 订阅模板](https://github.com/bryet/s-ui/wiki/Subscription-Clash-Template) | Clash.Meta 模板、代理组和过滤规则 |
+| [API 文档](https://github.com/bryet/s-ui/wiki/API-Documentation) | 使用令牌认证的 REST API（`/apiv2`） |
+| [配置对象](https://github.com/bryet/s-ui/wiki/Configuration-Objects) | 通过 API 读写的对象结构 |
+| [设置参考](https://github.com/bryet/s-ui/wiki/Settings-Reference) | 面板的各项设置及其默认值 |
 
-## Default Installation Information
-- Panel Port: 2095
-- Panel Path: /app/
-- Subscription Port: 2096
-- Subscription Path: /sub/
-- User/Password: admin
+## 默认安装信息
 
-## Install & Upgrade to Latest Version
+- 面板端口：2095
+- 面板路径：`/app/`
+- 订阅端口：2096
+- 订阅路径：`/sub/`
+- 用户名和密码：均为 `admin`
+
+## 安装或升级到最新版本
 
 ### Linux/macOS
+
 ```sh
 bash <(curl -Ls https://raw.githubusercontent.com/bryet/s-ui/main/install.sh)
 ```
 
-#### Installer language
+#### 安装脚本语言
 
-The installer is available in the same six languages as the panel: `en` (default), `fa`, `ru`, `vi`, `zhcn`, `zhtw`. Choose one with the `SUI_LANG` environment variable (when unset, your system `$LANG` is used as a hint):
+安装脚本支持与面板相同的六种语言：`en`（安装脚本默认语言）、`fa`、`ru`、`vi`、`zhcn` 和 `zhtw`。可以通过 `SUI_LANG` 环境变量选择语言；未设置时，脚本会参考系统的 `$LANG` 值：
 
 ```sh
 SUI_LANG=fa bash <(curl -Ls https://raw.githubusercontent.com/bryet/s-ui/main/install.sh)
 ```
 
 ### Alpine Linux
-Alpine uses `apk` and OpenRC instead of `apt`/systemd. The install script detects Alpine automatically and sets up an OpenRC service. Since Alpine has no `bash` by default, install it first:
+
+Alpine 使用 `apk` 和 OpenRC，而不是 `apt` 和 systemd。安装脚本会自动识别 Alpine，并配置 OpenRC 服务。由于 Alpine 默认未安装 `bash`，请先安装：
 
 ```sh
 apk add bash
 bash <(curl -Ls https://raw.githubusercontent.com/bryet/s-ui/main/install.sh)
 ```
 
-Manage the service with OpenRC: `rc-service s-ui start|stop|restart` and `rc-update add s-ui default`.
+使用 OpenRC 管理服务：通过 `rc-service s-ui start|stop|restart` 启动、停止或重启服务，通过 `rc-update add s-ui default` 设置开机自启。
 
 ### Windows
-1. Download the latest Windows release from [GitHub Releases](https://github.com/bryet/s-ui/releases/latest)
-2. Extract the ZIP file
-3. Run `install-windows.bat` as Administrator
-4. Follow the installation wizard
 
-## Install legacy Version
+1. 从 [GitHub Releases](https://github.com/bryet/s-ui/releases/latest) 下载最新的 Windows 版本。
+2. 解压 ZIP 文件。
+3. 以管理员身份运行 `install-windows.bat`。
+4. 按照安装向导完成安装。
 
-**Step 1:** To install your desired legacy version, add the version to the end of the installation command. e.g., ver `v1.5.0`:
+## 安装历史版本
+
+在安装命令末尾指定需要安装的历史版本号。例如，安装 `v1.5.0`：
 
 ```sh
 VERSION=v1.5.0 && bash <(curl -Ls https://raw.githubusercontent.com/bryet/s-ui/$VERSION/install.sh) $VERSION
 ```
 
-## Manual installation
+## 手动安装
 
 ### Linux/macOS
-1. Get the latest version of S-UI based on your OS/Architecture from GitHub: [https://github.com/bryet/s-ui/releases/latest](https://github.com/bryet/s-ui/releases/latest)
-2. **OPTIONAL** Get the latest version of `s-ui.sh` [https://raw.githubusercontent.com/bryet/s-ui/master/s-ui.sh](https://raw.githubusercontent.com/bryet/s-ui/master/s-ui.sh)
-3. **OPTIONAL** Copy `s-ui.sh` to /usr/bin/ and run `chmod +x /usr/bin/s-ui`.
-4. Extract s-ui tar.gz file to a directory of your choice and navigate to the directory where you extracted the tar.gz file.
-5. Copy *.service files to /etc/systemd/system/ and run `systemctl daemon-reload`.
-6. Enable autostart and start S-UI service using `systemctl enable s-ui --now`
-7. Start sing-box service using `systemctl enable sing-box --now`
+
+1. 根据操作系统和架构，从 [GitHub Releases](https://github.com/bryet/s-ui/releases/latest) 下载最新的 S-UI 版本。
+2. **可选：** 下载最新的 [s-ui.sh](https://raw.githubusercontent.com/bryet/s-ui/master/s-ui.sh)。
+3. **可选：** 将 `s-ui.sh` 复制到 `/usr/bin/`，并运行 `chmod +x /usr/bin/s-ui`。
+4. 将 S-UI 的 tar.gz 压缩包解压到指定目录，并进入该目录。
+5. 将 `*.service` 文件复制到 `/etc/systemd/system/`，然后运行 `systemctl daemon-reload`。
+6. 运行 `systemctl enable s-ui --now`，设置 S-UI 开机自启并启动服务。
+7. 运行 `systemctl enable sing-box --now`，启动 sing-box 服务。
 
 ### Windows
-1. Get the latest Windows version from GitHub: [https://github.com/bryet/s-ui/releases/latest](https://github.com/bryet/s-ui/releases/latest)
-2. Download the appropriate Windows package (e.g., `s-ui-windows-amd64.zip`)
-3. Extract the ZIP file to a directory of your choice
-4. Run `install-windows.bat` as Administrator
-5. Follow the installation wizard
-6. Access the panel at http://localhost:2095/app
 
-## Uninstall S-UI
+1. 在 [GitHub Releases](https://github.com/bryet/s-ui/releases/latest) 中找到最新的 Windows 版本。
+2. 下载对应架构的安装包，例如 `s-ui-windows-amd64.zip`。
+3. 将 ZIP 文件解压到指定目录。
+4. 以管理员身份运行 `install-windows.bat`。
+5. 按照安装向导完成安装。
+6. 访问面板：<http://localhost:2095/app>。
+
+## 卸载 S-UI
 
 ### systemd
+
 ```sh
 sudo -i
 
@@ -160,6 +170,7 @@ rm /usr/bin/s-ui
 ```
 
 ### Alpine (OpenRC)
+
 ```sh
 rc-service s-ui stop
 rc-update del s-ui default
@@ -169,22 +180,22 @@ rm -fr /usr/local/s-ui
 rm /usr/bin/s-ui
 ```
 
-## Install using Docker
+## 使用 Docker 安装
 
 <details>
-   <summary>Click for details</summary>
+   <summary>点击查看详情</summary>
 
-### Usage
+### 使用方法
 
-**Step 1:** Install Docker
+**第一步：安装 Docker**
 
 ```shell
 curl -fsSL https://get.docker.com | sh
 ```
 
-**Step 2:** Install S-UI
+**第二步：安装 S-UI**
 
-> Docker compose method
+使用 Docker Compose：
 
 ```shell
 mkdir s-ui && cd s-ui
@@ -192,7 +203,7 @@ wget -q https://raw.githubusercontent.com/bryet/s-ui/master/docker-compose.yml
 docker compose up -d
 ```
 
-> Use docker
+使用 Docker 命令：
 
 ```shell
 mkdir s-ui && cd s-ui
@@ -204,7 +215,7 @@ docker run -itd \
     alireza7/s-ui:latest
 ```
 
-> Build your own image
+自行构建镜像：
 
 ```shell
 git clone https://github.com/bryet/s-ui
@@ -214,81 +225,85 @@ docker build -t s-ui .
 
 </details>
 
-## Manual run ( contribution )
+## 手动运行与开发
 
 <details>
-   <summary>Click for details</summary>
+   <summary>点击查看详情</summary>
 
-### Build and run whole project
+### 构建并运行完整项目
+
 ```shell
 ./runSUI.sh
 ```
 
-### Clone the repository
+### 克隆仓库
+
 ```shell
-# clone repository
+# 克隆仓库
 git clone https://github.com/bryet/s-ui
-# clone submodules
+# 克隆子模块
 git submodule update --init --recursive
 ```
 
+### 前端
 
-### - Frontend
+前端代码请参阅 [s-ui-frontend](https://github.com/bryet/s-ui-frontend)。
 
-Visit [s-ui-frontend](https://github.com/bryet/s-ui-frontend) for frontend code
+### 后端
 
-### - Backend
-> Please build frontend once before!
+> 构建后端前，请先完成前端构建。
 
-To build backend:
+构建后端：
+
 ```shell
-# remove old frontend compiled files
+# 删除旧的前端构建文件
 rm -fr web/html/*
-# apply new frontend compiled files
+# 复制新的前端构建文件
 cp -R frontend/dist/ web/html/
-# build
+# 构建后端
 go build -o sui main.go
 ```
 
-To run backend (from root folder of repository):
+在仓库根目录运行后端：
+
 ```shell
 ./sui
 ```
 
 </details>
 
-## Languages
+## 支持的语言
 
-- English
-- Farsi
-- Vietnamese
-- Chinese (Simplified)
-- Chinese (Traditional)
-- Russian
+- 英语
+- 波斯语
+- 越南语
+- 简体中文（前端默认语言）
+- 繁体中文
+- 俄语
 
-## Features
+## 功能说明
 
-- Supported protocols:
-  - General:  Mixed, SOCKS, HTTP, HTTPS, Direct, Redirect, TProxy
-  - V2Ray based: VLESS, VMess, Trojan, Shadowsocks
-  - Other protocols: ShadowTLS, Hysteria, Hysteria2, Naive, TUIC
-- Supports XTLS protocols
-- An advanced interface for routing traffic, incorporating PROXY Protocol, External, and Transparent Proxy, SSL Certificate, and Port
-- An advanced interface for inbound and outbound configuration
-- Clients’ traffic cap and expiration date
-- Displays online clients, inbounds and outbounds with traffic statistics, and system status monitoring
-- Subscription service with ability to add external links and subscription
-- HTTPS for secure access to the web panel and subscription service (self-provided domain + SSL certificate)
-- Dark/Light theme
+- 支持的协议：
+  - 通用协议：Mixed、SOCKS、HTTP、HTTPS、Direct、Redirect、TProxy
+  - V2Ray 相关协议：VLESS、VMess、Trojan、Shadowsocks
+  - 其他协议：ShadowTLS、Hysteria、Hysteria2、Naive、TUIC
+- 支持 XTLS 协议。
+- 提供高级流量路由配置界面，支持 PROXY Protocol、外部代理、透明代理、SSL 证书和端口配置。
+- 提供高级入站和出站配置界面。
+- 支持设置用户流量上限和到期时间。
+- 展示在线用户、入站和出站的流量统计，并监控系统状态。
+- 提供订阅服务，支持添加外部链接和订阅。
+- 支持通过 HTTPS 安全访问面板和订阅服务，需要自行提供域名和 SSL 证书。
+- 支持深色和浅色主题。
 
-## Environment Variables
+## 环境变量
 
 <details>
-  <summary>Click for details</summary>
+  <summary>点击查看详情</summary>
 
-### Usage
+### 使用方法
 
-| Variable       |                      Type                      | Default       |
+| 变量 | 类型 | 默认值 |
 | -------------- | :--------------------------------------------: | :------------ |
 | SUI_LOG_LEVEL  | `"debug"` \| `"info"` \| `"warn"` \| `"error"` | `"info"`      |
 | SUI_DEBUG      |                   `boolean`                    | `false`       |
@@ -298,10 +313,10 @@ To run backend (from root folder of repository):
 
 </details>
 
-## SSL Certificate
+## SSL 证书
 
 <details>
-  <summary>Click for details</summary>
+  <summary>点击查看详情</summary>
 
 ### Certbot
 
@@ -315,23 +330,23 @@ certbot certonly --standalone --register-unsafely-without-email --non-interactiv
 
 </details>
 
-## Third-party Projects
+## 第三方项目
 
-Community-made projects built around S-UI. These are not affiliated with or maintained by S-UI — use them at your own discretion:
+以下是社区围绕 S-UI 开发的项目，它们不隶属于 S-UI，也不由 S-UI 维护，请自行判断是否使用：
 
-- [itning/reset-s-ui-traffic](https://github.com/itning/reset-s-ui-traffic) — periodic traffic reset for all users
-- [zqh2333/s-ui-traffic-reset](https://github.com/zqh2333/s-ui-traffic-reset) — traffic reset tool
-- [Sownix21/SUI-Bot](https://github.com/Sownix21/SUI-Bot) - telegram bot
-- [Android App](https://github.com/Sownix21/SUI-Node) - multi panel controller
+- [itning/reset-s-ui-traffic](https://github.com/itning/reset-s-ui-traffic)：定期重置所有用户的流量。
+- [zqh2333/s-ui-traffic-reset](https://github.com/zqh2333/s-ui-traffic-reset)：流量重置工具。
+- [Sownix21/SUI-Bot](https://github.com/Sownix21/SUI-Bot)：Telegram 机器人。
+- [Android 应用](https://github.com/Sownix21/SUI-Node)：多面板管理客户端。
 
-> Building something on top of S-UI (a Telegram bot, monitoring, automation, ...)? Open an issue/PR to get it listed here.
+> 如果你正在基于 S-UI 开发 Telegram 机器人、监控或自动化工具等项目，欢迎提交 Issue 或 PR，将项目收录到此处。
 
-## Star History
+## Star 历史
 
 <a href="https://www.star-history.com/?repos=bryet%2Fs-ui&type=date&releases=&legend=bottom-right">
  <picture>
    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=bryet/s-ui&type=date&theme=dark&legend=bottom-right" />
    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=bryet/s-ui&type=date&legend=bottom-right" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=bryet/s-ui&type=date&legend=bottom-right" />
+   <img alt="Star 历史趋势图" src="https://api.star-history.com/chart?repos=bryet/s-ui&type=date&legend=bottom-right" />
  </picture>
 </a>
