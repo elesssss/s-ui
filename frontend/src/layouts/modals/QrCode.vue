@@ -132,9 +132,6 @@
                   @keydown.enter.prevent="copyToClipboard(l.uri)"
                   @keydown.space.prevent="copyToClipboard(l.uri)"
                 />
-                <p class="text-caption mt-2">
-                  {{ $t('l2tp.copyConnectionInfo') }}
-                </p>
               </v-col>
             </v-row>
           </v-window-item>
