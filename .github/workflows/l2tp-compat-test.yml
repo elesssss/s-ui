@@ -1,0 +1,38 @@
+name: L2TP dependency regression
+
+on:
+  push:
+    paths:
+      - 'third_party/veepin/**'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/l2tp-compat-test.yml'
+  pull_request:
+    paths:
+      - 'third_party/veepin/**'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/l2tp-compat-test.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: third_party/veepin/go.sum
+      - name: Check patch formatting
+        run: |
+          test -z "$(gofmt -l third_party/veepin/internal/ikev1/ikuai*.go third_party/veepin/internal/cryptoutil/modp3072_test.go)"
+      - name: Test L2TP dependency
+        working-directory: third_party/veepin
+        run: go test -mod=readonly -count=1 ./internal/cryptoutil ./internal/ikev1 ./internal/l2tp ./l2tp
+      - name: Check compatibility changes for races
+        working-directory: third_party/veepin
+        run: go test -mod=readonly -race -count=1 -run 'TestIKuai|TestMODP3072' ./internal/cryptoutil ./internal/ikev1
