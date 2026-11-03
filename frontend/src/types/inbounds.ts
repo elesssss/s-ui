@@ -300,6 +300,7 @@ export function createInbound<T extends Inbound>(type: InType,json?: Partial<T>)
   // objects and arrays inside it. Editing one form then leaked into the table
   // and into every object created afterwards.
   const defaultObject: Inbound = { ...structuredClone(defaultValues[type] ?? {}), ...(json ?? {}) }
+  if (type === 'l2tp') delete defaultObject.enable
   generateSecrets(defaultObject)
   return defaultObject
 }

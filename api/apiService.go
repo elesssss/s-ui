@@ -393,14 +393,11 @@ func (a *ApiService) SetMaintenance(c *gin.Context) {
 }
 
 func (a *ApiService) ResetTraffic(c *gin.Context) {
-	inboundIds, err := a.ClientService.ResetAllClientsTraffic()
-	if err != nil {
+	if err := a.ClientService.ResetAllClientsTraffic(); err != nil {
 		jsonMsg(c, "resetTraffic", err)
 		return
 	}
-	if len(inboundIds) > 0 {
-		err = a.InboundService.UpdateInboundsUsers(database.GetDB(), inboundIds)
-	}
+	err := a.ConfigService.RestartCore()
 	jsonMsg(c, "resetTraffic", err)
 }
 

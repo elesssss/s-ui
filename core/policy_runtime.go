@@ -25,21 +25,46 @@ import (
 // Each policy owns a separate scope. Closing a retired policy must not cancel
 // the box scope that owns access listeners, IKE/PPP and their gVisor devices.
 type policyRuntime struct {
-	generation *policyGeneration
-	ctx        context.Context
-	scope      *adapter.Scope
-	router     *route.Router
-	dns        *dns.Router
-	transports *dns.TransportManager
-	outbound   *manager.OutboundManager
-	network    *route.NetworkManager
-	connection *route.ConnectionManager
-	http       adapter.LifecycleService
-	reference  *route.ReferenceManager
-	closeOnce  sync.Once
-	closed     atomic.Bool
-	closeErr   error
-	logger     log.ContextLogger
+	generation          *policyGeneration
+	ctx                 context.Context
+	scope               *adapter.Scope
+	router              *route.Router
+	dns                 *dns.Router
+	transports          *manager.DNSTransportManager
+	outbound            *manager.OutboundManager
+	network             *route.NetworkManager
+	connection          *route.ConnectionManager
+	http                adapter.LifecycleService
+	reference           *route.ReferenceManager
+	closeOnce           sync.Once
+	closed              atomic.Bool
+	closeErr            error
+	logger              log.ContextLogger
+	components          map[adapter.Lifecycle]*adapter.Scope
+	owned               []boxComponent
+	networkInitializing bool
+	routerInitializing  bool
+	rulesStarting       bool
+}
+
+// Register ownership in construction order, before any subsequent operation
+// can fail. Successful preparation replaces that order with dependency order.
+func (p *policyRuntime) own(name string, lifecycle adapter.Lifecycle) *adapter.Scope {
+	child := adapter.NewScope(p.ctx, p.logger)
+	p.components[lifecycle] = child
+	p.owned = append(p.owned, boxComponent{name, lifecycle})
+	return child
+}
+
+func (p *policyRuntime) closeOwned() error {
+	var err error
+	for i := len(p.owned) - 1; i >= 0; i-- {
+		component := p.owned[i]
+		if closeErr := p.components[component.lifecycle].Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("close %s: %w", component.name, closeErr))
+		}
+	}
+	return err
 }
 
 func (p *policyRuntime) close() error {
@@ -57,7 +82,22 @@ func (p *policyRuntime) close() error {
 
 func (p *policyRuntime) startComponents(stage adapter.StartStage, components ...boxComponent) error {
 	for _, component := range components {
-		if err := p.scope.Start(component.name, component.lifecycle, stage); err != nil {
+		scope := p.scope
+		if child := p.components[component.lifecycle]; child != nil {
+			scope = child
+		}
+		if component.lifecycle == p.network && stage == adapter.StartStateInitialize {
+			p.networkInitializing = true
+		}
+		if component.lifecycle == p.router {
+			if stage == adapter.StartStateInitialize {
+				p.routerInitializing = true
+			}
+			if stage == adapter.StartStatePostStart {
+				p.rulesStarting = true
+			}
+		}
+		if err := scope.Start(component.name, component.lifecycle, stage); err != nil {
 			return err
 		}
 	}
@@ -69,6 +109,10 @@ func (b *Box) preparePolicy(options option.Options) (p *policyRuntime, err error
 	// those of the policy that is still serving traffic.
 	ctx := service.ExtendContext(b.ctx)
 	p = &policyRuntime{ctx: ctx, logger: b.logger, scope: adapter.NewScope(ctx, b.logger)}
+	ctx = p.scope.Context()
+	p.ctx = ctx
+	p.components = make(map[adapter.Lifecycle]*adapter.Scope)
+	p.scope.Add(p.closeOwned)
 	p.generation = &policyGeneration{runtime: p}
 	defer func() {
 		if err != nil {
@@ -79,29 +123,63 @@ func (b *Box) preparePolicy(options option.Options) (p *policyRuntime, err error
 	d := common.PtrValueOrDefault(options.DNS)
 	f := b.logFactory
 	p.outbound = manager.NewOutboundManager(f.NewLogger("outbound"), service.FromContext[adapter.OutboundRegistry](ctx), b.endpoint, r.Final)
+	p.outbound.Prepare(p.own("outbound", p.outbound))
 	registry := service.FromContext[adapter.DNSTransportRegistry](ctx)
-	p.transports = dns.NewTransportManager(registry, p.outbound, d.Final)
+	p.transports = manager.NewDNSTransportManager(f.NewLogger("dns/transport"), registry, p.outbound, d.Final)
+	p.transports.Prepare(p.own("dns-transport", p.transports))
 	service.MustRegister[adapter.OutboundManager](ctx, p.outbound)
 	service.MustRegister[adapter.DNSTransportManager](ctx, p.transports)
 	p.dns, err = dns.NewRouter(ctx, f, d)
 	if err != nil {
 		return p, err
 	}
+	p.own("dns-router", p.dns)
 	service.MustRegister[adapter.DNSRouter](ctx, &policyDNS{DNSRouter: p.dns, generation: p.generation, policy: b.policy})
 	service.MustRegister[adapter.DNSRuleSetUpdateValidator](ctx, p.dns)
 	// NetworkManager captures ConnectionManager in its constructor. Register
 	// the candidate's owner first, so its notifications cannot reset old flows.
 	p.connection = route.NewConnectionManager(ctx, f.NewLogger("connection"))
+	p.own("connection", p.connection).Add(func() error { p.connection.CloseAll(); return nil })
 	service.MustRegister[adapter.ConnectionManager](ctx, p.connection)
 	p.network, err = route.NewNetworkManager(ctx, f.NewLogger("network"), r, d)
 	if err != nil {
 		return p, err
 	}
+	p.own("network", p.network).Add(func() error {
+		if p.networkInitializing {
+			return nil
+		}
+		return common.Close(p.network.InterfaceMonitor(), p.network.NetworkMonitor())
+	})
 	service.MustRegister[adapter.NetworkManager](ctx, p.network)
 	h := httpclient.NewManager(ctx, f.NewLogger("httpclient"), options.HTTPClients, r.DefaultHTTPClient)
 	p.http = h
+	p.own(h.Name(), h)
 	service.MustRegister[adapter.HTTPClientManager](ctx, h)
 	p.router = route.NewRouter(ctx, f, r, d)
+	p.own("router", p.router).Add(func() error {
+		var cleanupErr error
+		if !p.rulesStarting {
+			for _, rule := range p.router.Rules() {
+				cleanupErr = errors.Join(cleanupErr, rule.Close())
+			}
+		}
+		if !p.routerInitializing {
+			closed := make(map[string]bool)
+			for _, options := range r.RuleSet {
+				for _, tag := range options.Tag {
+					if closed[tag] {
+						continue
+					}
+					if ruleSet, found := p.router.RuleSet(tag); found {
+						closed[tag] = true
+						cleanupErr = errors.Join(cleanupErr, ruleSet.Close())
+					}
+				}
+			}
+		}
+		return cleanupErr
+	})
 	service.MustRegister[adapter.Router](ctx, p.router)
 	if err = p.router.Initialize(r.Rules, r.RuleSet); err != nil {
 		return p, err
@@ -139,16 +217,21 @@ func (b *Box) preparePolicy(options option.Options) (p *policyRuntime, err error
 	})
 	p.router.AppendTracker(b.sessionTracker)
 	p.reference = route.NewReferenceManager(ctx, f.NewLogger("reference"), options)
-	// First registration controls scope cleanup order. Stop rules, HTTP clients
-	// and outbounds before disposing the DNS/network services they depend on.
+	p.own(p.reference.Name(), p.reference)
+	// Stop rule downloads and probes before their DNS/network dependencies.
+	p.owned = []boxComponent{
+		{"network", p.network}, {"dns-transport", p.transports}, {"dns-router", p.dns},
+		{"connection", p.connection}, {"outbound", p.outbound}, {h.Name(), h},
+		{"router", p.router}, {p.reference.Name(), p.reference},
+	}
 	if err = p.startComponents(adapter.StartStateInitialize,
-		boxComponent{"network", p.network},
-		boxComponent{"dns-transport", p.transports},
-		boxComponent{"dns-router", p.dns},
-		boxComponent{"connection", p.connection},
 		boxComponent{"outbound", p.outbound},
+		boxComponent{"dns-transport", p.transports},
+		boxComponent{"network", p.network},
+		boxComponent{"connection", p.connection},
 		boxComponent{h.Name(), h},
 		boxComponent{"router", p.router},
+		boxComponent{"dns-router", p.dns},
 		boxComponent{p.reference.Name(), p.reference},
 	); err != nil {
 		return p, err

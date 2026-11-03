@@ -7,10 +7,7 @@ import (
 	"github.com/alireza0/s-ui/database/model"
 )
 
-// The global reset now updates users in place instead of restarting the core,
-// so it must report the inbounds whose user lists changed: those of the
-// clients it re-enabled, and only those. #1278
-func TestResetAllClientsTrafficReturnsReenabledInbounds(t *testing.T) {
+func TestResetAllClientsTraffic(t *testing.T) {
 	db := settingTestDB(t)
 	clients := []model.Client{
 		{Name: "depleted", Enable: true, Up: 10, Down: 10, Inbounds: json.RawMessage(`[1,2]`)},
@@ -30,12 +27,9 @@ func TestResetAllClientsTrafficReturnsReenabledInbounds(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ids, err := (&ClientService{}).ResetAllClientsTraffic()
+	err := (&ClientService{}).ResetAllClientsTraffic()
 	if err != nil {
 		t.Fatal(err)
-	}
-	if len(ids) != 2 || ids[0]+ids[1] != 3 {
-		t.Errorf("expected inbounds [1 2] of the re-enabled client, got %v", ids)
 	}
 
 	var stored []model.Client

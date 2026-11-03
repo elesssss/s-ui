@@ -32,6 +32,11 @@ func (i *Inbound) UnmarshalJSON(data []byte) error {
 	delete(raw, "id")
 	i.Type, _ = raw["type"].(string)
 	delete(raw, "type")
+	// Older transplanted builds stored an L2TP-only enable flag. The source
+	// protocol has no such option; discard it without changing other inbounds.
+	if i.Type == "l2tp" {
+		delete(raw, "enable")
+	}
 	i.Tag, _ = raw["tag"].(string)
 	delete(raw, "tag")
 
@@ -77,6 +82,9 @@ func (i Inbound) MarshalJSON() ([]byte, error) {
 		}
 	}
 
+	if i.Type == "l2tp" {
+		delete(combined, "enable")
+	}
 	return json.Marshal(combined)
 }
 
@@ -98,6 +106,9 @@ func (i Inbound) MarshalFull() (*map[string]interface{}, error) {
 		for k, v := range restFields {
 			combined[k] = v
 		}
+	}
+	if i.Type == "l2tp" {
+		delete(combined, "enable")
 	}
 	return &combined, nil
 }

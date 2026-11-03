@@ -141,9 +141,6 @@ func (j *JsonService) getOutbounds(clientConfig json.RawMessage, inbounds []*mod
 		return nil, nil, err
 	}
 	for _, inData := range inbounds {
-		if inData.Type == "l2tp" {
-			continue
-		}
 		if len(inData.OutJson) < 5 {
 			continue
 		}

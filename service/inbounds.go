@@ -69,9 +69,6 @@ func (s *InboundService) GetAll() (*[]map[string]interface{}, error) {
 			}
 			inbData["listen"] = restFields["listen"]
 			inbData["listen_port"] = restFields["listen_port"]
-			if inbound.Type == "l2tp" {
-				inbData["enable"] = restFields["enable"]
-			}
 			if inbound.Type == "shadowtls" {
 				json.Unmarshal(restFields["version"], &shadowtls_version)
 			}
@@ -268,11 +265,6 @@ func (s *InboundService) fetchUsers(db *gorm.DB, inboundType string, condition s
 	}
 
 	var users []string
-	// Existing clients acquire L2TP credentials when their user form is saved.
-	// Until then they must not become null users that prevent the core starting.
-	if inboundType == "l2tp" {
-		condition = "(" + condition + ") AND json_extract(clients.config, '$.l2tp') IS NOT NULL"
-	}
 
 	err := db.Raw(
 		fmt.Sprintf(`SELECT json_extract(clients.config, "$.%s")

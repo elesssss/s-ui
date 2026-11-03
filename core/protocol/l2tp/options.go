@@ -24,8 +24,6 @@ type Options struct {
 	PSK        string `json:"psk"`
 	Pool       string `json:"pool,omitempty"`
 	Users      []User `json:"users,omitempty"`
-
-	Enable *bool `json:"enable,omitempty"`
 }
 
 func (o *Options) validate() error {

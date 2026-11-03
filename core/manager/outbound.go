@@ -47,6 +47,12 @@ func (m *OutboundManager) Initialize(defaultOutboundFallback func() (adapter.Out
 	m.defaultOutboundFallback = defaultOutboundFallback
 }
 
+// Prepare binds constructor cleanup without starting the manager or resolving
+// a default outbound before the complete candidate configuration is available.
+func (m *OutboundManager) Prepare(scope *adapter.Scope) {
+	m.scopes.bind(scope)
+}
+
 func (m *OutboundManager) Start(stage adapter.StartStage, scope *adapter.Scope) error {
 	m.scopes.attach(stage, scope)
 	m.access.Lock()
@@ -222,21 +228,25 @@ func (m *OutboundManager) Create(ctx context.Context, router adapter.Router, log
 	if tag == "" {
 		return os.ErrInvalid
 	}
-	outbound, err := m.registry.CreateOutbound(ctx, router, logger, tag, outboundType, options)
-	if err != nil {
-		return err
-	}
 	m.access.RLock()
 	_, loaded := m.outboundByTag[tag]
 	m.access.RUnlock()
 	if loaded {
 		return E.New("duplicate outbound tag: ", tag)
 	}
+	outbound, err := m.registry.CreateOutbound(ctx, router, logger, tag, outboundType, options)
+	if err != nil {
+		return err
+	}
 	lifecycle, isLifecycle := outbound.(adapter.Lifecycle)
 	// Started outside the lock: starting looks the dependencies up again.
 	if started, stage := m.scopes.current(); started && isLifecycle {
 		err = m.scopes.startHot(outboundName(outbound), lifecycle, stage)
 		if err != nil {
+			return err
+		}
+	} else if isLifecycle {
+		if err = m.scopes.prepare(outboundName(outbound), lifecycle); err != nil {
 			return err
 		}
 	}

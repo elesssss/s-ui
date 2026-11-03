@@ -52,7 +52,7 @@ type Box struct {
 	outbound            *manager.OutboundManager
 	service             *manager.ServiceManager
 	certificateProvider *boxCertificate.Manager
-	dnsTransport        *dns.TransportManager
+	dnsTransport        *manager.DNSTransportManager
 	dnsRouter           *dns.Router
 	connection          *route.ConnectionManager
 	router              *route.Router
@@ -210,7 +210,7 @@ func NewBox(options Options) (*Box, error) {
 	endpointManager := manager.NewEndpointManager(logFactory.NewLogger("endpoint"), endpointRegistry)
 	inboundManager := manager.NewInboundManager(logFactory.NewLogger("inbound"), inboundRegistry, endpointManager)
 	outboundManager := manager.NewOutboundManager(logFactory.NewLogger("outbound"), outboundRegistry, endpointManager, routeOptions.Final)
-	dnsTransportManager := dns.NewTransportManager(dnsTransportRegistry, outboundManager, dnsOptions.Final)
+	dnsTransportManager := manager.NewDNSTransportManager(logFactory.NewLogger("dns/transport"), dnsTransportRegistry, outboundManager, dnsOptions.Final)
 	serviceManager := manager.NewServiceManager(logFactory.NewLogger("service"), serviceRegistry)
 	certificateProviderManager := boxCertificate.NewManager(certificateProviderRegistry)
 	service.MustRegister[adapter.EndpointManager](ctx, endpointManager)

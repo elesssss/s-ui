@@ -99,7 +99,9 @@ func (b *Box) accessContext() (context.Context, error) {
 		return nil, net.ErrClosed
 	}
 	defer g.release()
-	ctx := service.ExtendContext(g.runtime.ctx)
+	// Access services live until the box stops. Copy the generation's registry
+	// onto that lifetime so retiring a policy cannot cancel a later-added VPN.
+	ctx := service.ContextWithRegistry(b.scope.Context(), service.RegistryFromContext(g.runtime.ctx).Clone())
 	service.MustRegister[adapter.Router](ctx, b.policy)
 	service.MustRegister[adapter.NetworkManager](ctx, b.network)
 	service.MustRegister[adapter.DNSRouter](ctx, &accessDNS{DNSRouter: b.dnsRouter, policy: b.policy})

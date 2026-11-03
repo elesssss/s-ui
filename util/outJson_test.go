@@ -7,18 +7,17 @@ import (
 	"github.com/alireza0/s-ui/database/model"
 )
 
-func TestL2TPDoesNotGenerateSubscriptionOutbound(t *testing.T) {
-	inbound := &model.Inbound{
-		Type:    "l2tp",
-		Tag:     "vpn",
-		Options: json.RawMessage(`{"psk":"test-only"}`),
-		OutJson: json.RawMessage(`{"type":"l2tp","psk":"stale-test-only"}`),
-	}
-	if err := FillOutJson(inbound, "example.com"); err != nil {
-		t.Fatal(err)
-	}
-	if len(inbound.OutJson) != 0 {
-		t.Fatalf("L2TP retained a subscription outbound: %s", inbound.OutJson)
+func TestL2TPLeavesSubscriptionOutboundUnchanged(t *testing.T) {
+	for _, out := range []json.RawMessage{nil, json.RawMessage(`{"type":"l2tp","psk":"stale-test-only"}`)} {
+		inbound := &model.Inbound{
+			Type: "l2tp", Tag: "vpn", Options: json.RawMessage(`{"psk":"test-only"}`), OutJson: out,
+		}
+		if err := FillOutJson(inbound, "example.com"); err != nil {
+			t.Fatal(err)
+		}
+		if string(inbound.OutJson) != string(out) {
+			t.Fatalf("L2TP outbound changed: %s", inbound.OutJson)
+		}
 	}
 }
 

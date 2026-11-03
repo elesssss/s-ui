@@ -240,7 +240,7 @@
 
 <script lang="ts">
 import { PropType } from 'vue'
-import { InTypes, createInbound, Addr, ShadowTLS, L2TP } from '@/types/inbounds'
+import { InTypes, createInbound, Addr, ShadowTLS } from '@/types/inbounds'
 import { tls } from '@/types/tls'
 import DocLink from '@/components/DocLink.vue'
 import RandomUtil from '@/plugins/randomUtil'
@@ -335,11 +335,6 @@ export default {
       if (this.inbound == undefined) return false
       if (this.inbound.tag == "") return false
       if (this.inbound.listen_port > 65535 || this.inbound.listen_port < 1) return false
-      if (this.inbound.type === 'l2tp') {
-        const options = this.inbound as L2TP
-        if (!options.listen || !options.public_ip || !options.psk || !options.pool) return false
-        if (!Number.isInteger(options.listen_port) || options.listen_port === 4500) return false
-      }
       if (this.OnlyTLS.includes(this.inbound.type) && this.inbound.tls_id == 0) return false
       return true
     },

@@ -11,11 +11,7 @@ import (
 // Fill Inbound's out_json
 func FillOutJson(i *model.Inbound, hostname string) error {
 	switch i.Type {
-	case "l2tp":
-		// L2TP clients use their OS VPN settings, not a sing-box outbound.
-		i.OutJson = nil
-		return nil
-	case "direct", "tun", "redirect", "tproxy":
+	case "l2tp", "direct", "tun", "redirect", "tproxy":
 		return nil
 	}
 	var outJson map[string]interface{}

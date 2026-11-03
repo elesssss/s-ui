@@ -53,6 +53,7 @@
       >
         <template #append>
           <v-switch
+            v-if="item.type !== 'l2tp'"
             :model-value="item.enable !== false"
             :loading="toggling[item.id]"
             :disabled="toggling[item.id]"

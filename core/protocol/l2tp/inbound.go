@@ -49,7 +49,7 @@ func (i *Inbound) Start(stage adapter.StartStage, scope *adapter.Scope) error {
 	if i.closed {
 		return net.ErrClosed
 	}
-	if i.server != nil || len(i.options.Users) == 0 || (i.options.Enable != nil && !*i.options.Enable) {
+	if i.server != nil || len(i.options.Users) == 0 {
 		return nil
 	}
 	users := make(map[string]string)

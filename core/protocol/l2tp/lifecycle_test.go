@@ -56,25 +56,6 @@ func TestEmptyInboundRemainsHealthy(t *testing.T) {
 	_ = in.Close()
 }
 
-func TestDisabledInboundDoesNotStartWorker(t *testing.T) {
-	enabled := false
-	raw, err := newInbound(context.Background(), nil, log.NewNOPFactory().Logger(), "disabled", Options{
-		Enable: &enabled, Listen: "invalid-listen", Users: []User{{Name: "test-user", Password: "test-only"}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	in := raw.(*Inbound)
-	scope := adapter.NewScope(context.Background(), log.NewNOPFactory().Logger())
-	if err := in.Start(adapter.StartStatePostStart, scope); err != nil {
-		t.Fatal(err)
-	}
-	if in.server != nil || in.HealthError() != nil {
-		t.Fatal("disabled inbound started a listener or reported a failure")
-	}
-	_ = in.Close()
-}
-
 // sing-box 1.14.4 removes inbounds by closing their scopes rather than calling
 // Close directly. Even an empty inbound must register its cleanup there.
 func TestScopeCloseClosesInbound(t *testing.T) {
