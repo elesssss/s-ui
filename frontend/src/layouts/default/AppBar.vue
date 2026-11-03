@@ -1,0 +1,130 @@
+<template>
+  <v-app-bar :elevation="5">
+    <v-icon
+      v-if="isMobile"
+      :aria-label="$t('a11y.menu')"
+      icon="mdi-menu"
+      @click="$emit('toggleDrawer')"
+    />
+    <span
+      v-else
+      style="width: 24px"
+    />
+    <v-app-bar-title
+      :text="$t(<string>route.name)"
+      class="align-center text-center "
+    />
+    <!-- A stopped core is invisible from the panel otherwise, and the flag
+         survives a reboot, so it has to be said on every page. -->
+    <v-chip
+      v-if="maintenance"
+      v-tooltip="$t('setting.maintenanceOnHint')"
+      color="warning"
+      variant="flat"
+      density="comfortable"
+      prepend-icon="mdi-wrench"
+      class="mr-2"
+    >
+      {{ $t('setting.maintenance') }}
+    </v-chip>
+    <v-chip
+      v-if="update"
+      v-tooltip="$t('update.hint', { current: update.current })"
+      color="info"
+      variant="flat"
+      density="comfortable"
+      prepend-icon="mdi-update"
+      class="mr-2"
+      @click="Data().updateVisible = true"
+    >
+      {{ $t('update.available', { version: update.latest }) }}
+    </v-chip>
+    <v-btn
+      v-tooltip="$t('donate')"
+      :aria-label="$t('donate')"
+      icon
+      variant="text"
+      href="https://donate.alireza0.dev"
+      target="_blank"
+      rel="noopener"
+      class="donate-btn"
+    >
+      <v-icon
+        icon="mdi-heart"
+        color="red"
+        size="1.5em"
+      />
+    </v-btn>
+    <v-menu>
+      <template #activator="{ props }">
+        <v-btn
+          :aria-label="$t('a11y.language')"
+          icon
+          v-bind="props"
+        >
+          <v-icon>mdi-translate</v-icon>
+        </v-btn>
+      </template>
+      <v-list>
+        <v-list-item
+          v-for="lang in languages"
+          :key="lang.value"
+          :active="isActiveLocale(lang.value)"
+          @click="changeLocale(lang.value)"
+        >
+          <v-list-item-title>{{ lang.title }}</v-list-item-title>
+        </v-list-item>
+      </v-list>
+    </v-menu>
+    <v-menu>
+      <template #activator="{ props }">
+        <v-btn
+          :aria-label="$t('a11y.theme')"
+          icon
+          v-bind="props"
+        >
+          <v-icon>mdi-theme-light-dark</v-icon>
+        </v-btn>
+      </template>
+      <v-list>
+        <v-list-item
+          v-for="th in themes"
+          :key="th.value"
+          :prepend-icon="th.icon"
+          :active="isActiveTheme(th.value)"
+          @click="changeTheme(th.value)"
+        >
+          <v-list-item-title>{{ $t(`theme.${th.value}`) }}</v-list-item-title>
+        </v-list-item>
+      </v-list>
+    </v-menu>
+  </v-app-bar>
+</template>
+
+<script lang="ts" setup>
+import { useLocale } from 'vuetify'
+import { useRoute } from 'vue-router'
+import { useI18n } from 'vue-i18n'
+import { languages } from '@/locales'
+import { useThemeSwitcher } from '@/composables/useThemeSwitcher'
+import { computed } from 'vue'
+import Data from '@/store/modules/data'
+
+defineProps<{ isMobile: boolean }>()
+defineEmits<{ toggleDrawer: [] }>()
+
+const route = useRoute()
+const { locale: i18nLocale } = useI18n()
+const vuetifyLocale = useLocale()
+const { themes, changeTheme, isActiveTheme } = useThemeSwitcher()
+
+const changeLocale = (l: string) => {
+  i18nLocale.value = l
+  vuetifyLocale.current.value = l
+  localStorage.setItem('locale', l)
+  window.location.reload()
+}
+const isActiveLocale = (l: string) => i18nLocale.value === l
+const maintenance = computed((): boolean => Data().maintenance)
+const update = computed(() => Data().update)
+</script>

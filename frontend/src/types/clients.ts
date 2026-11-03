@@ -1,0 +1,203 @@
+import RandomUtil from "@/plugins/randomUtil"
+
+export interface Link {
+  type: "local" | "external" | "sub"
+  remark?: string
+  uri: string
+}
+
+export interface Client {
+  id?: number
+	enable: boolean
+	name: string
+	config?: Config
+	inbounds: number[]
+  links?: Link[]
+	volume: number
+	expiry: number
+  up: number
+  down: number
+  desc: string
+  group: string
+  remark?: string
+  delayStart?: boolean
+  autoReset?: boolean
+  resetDays?: number
+  nextReset?: number
+  totalUp?: number
+  totalDown?: number
+  createdAt?: number
+  onlineAt?: number
+}
+
+const defaultClient: Client = {
+  enable: true,
+  name: "",
+  config: {},
+  inbounds: [],
+  links: [],
+  volume: 0,
+  expiry: 0,
+  up: 0,
+  down: 0,
+  desc: "",
+  group: "",
+  remark: "",
+  delayStart: false,
+  autoReset: false,
+  resetDays: 0,
+  nextReset: 0,
+  totalUp: 0,
+  totalDown: 0,
+  createdAt: 0,
+  onlineAt: 0,
+}
+
+// Per-protocol client credentials, keyed by protocol. Which fields a protocol
+// carries beyond the name varies, so the rest stays unknown until read.
+type Config = {
+  [key: string]: {
+    name?: string
+    username?: string
+    [key: string]: unknown
+  }
+}
+
+export function updateConfigs(configs: Config, newUserName: string): Config {
+  for (const key in configs) {
+    if (Object.hasOwn(configs, key)) {
+      const config = configs[key]
+      if (Object.hasOwn(config, "name")) {
+        config.name = newUserName
+      } else if (Object.hasOwn(config, "username")) {
+        config.username = newUserName
+      }
+    }
+  }
+  return configs
+}
+
+export function shuffleConfigs(configs: Config, key?: string) {
+  const keys = key ? [key] : Object.keys(configs)
+  keys.forEach(k => {
+    switch (k) {
+      case "l2tp":
+      case "mixed":
+      case "socks":
+      case "http":
+      case "anytls":
+      case "trojan":
+      case "naive":
+      case "hysteria2":
+        configs[k].password = RandomUtil.randomSeq(10)
+        break
+      case "shadowsocks":
+        configs[k].password = RandomUtil.randomShadowsocksPassword(32)
+        break
+      case "shadowsocks16":
+        configs[k].password = RandomUtil.randomShadowsocksPassword(16)
+        break
+      case "shadowtls":
+        configs[k].password = RandomUtil.randomShadowsocksPassword(32)
+        break
+      case "hysteria":
+        configs[k].auth_str = RandomUtil.randomSeq(10)
+        break
+      case "snell":
+        configs[k].userkey = RandomUtil.randomSeq(32)
+        break
+      case "tuic":
+        configs[k].password = RandomUtil.randomSeq(10)
+        configs[k].uuid = RandomUtil.randomUUID()
+        break
+      case "vmess":
+      case "vless":
+        configs[k].uuid = RandomUtil.randomUUID()
+        break
+    }
+  })
+}
+
+export function randomConfigs(user: string): Config {
+  const mixedPassword = RandomUtil.randomSeq(10)
+  const ssPassword16 = RandomUtil.randomShadowsocksPassword(16)
+  const ssPassword32 = RandomUtil.randomShadowsocksPassword(32)
+  const uuid = RandomUtil.randomUUID()
+  return {
+    l2tp: { name: user, password: mixedPassword },
+    mixed: {
+      username: user,
+      password: mixedPassword,
+    },
+    socks: {
+      username: user,
+      password: mixedPassword,
+    },
+    http: {
+      username: user,
+      password: mixedPassword,
+    },
+    shadowsocks: {
+      name: user,
+      password: ssPassword32,
+    },
+    shadowsocks16: {
+      name: user,
+      password: ssPassword16,
+    },
+    shadowtls: {
+      name: user,
+      password: ssPassword32,
+    },
+    vmess: {
+      name: user,
+      uuid: uuid,
+      alterId: 0,
+    },
+    vless: {
+      name: user,
+      uuid: uuid,
+      flow: "xtls-rprx-vision",
+    },
+    anytls: {
+      name: user,
+      password: mixedPassword,
+    },
+    trojan: {
+      name: user,
+      password: mixedPassword,
+    },
+    naive: {
+      username: user,
+      password: mixedPassword,
+    },
+    hysteria: {
+      name: user,
+      auth_str: mixedPassword,
+    },
+    snell: {
+      name: user,
+      userkey: RandomUtil.randomSeq(32),
+    },
+    tuic: {
+      name: user,
+      uuid: uuid,
+      password: mixedPassword,
+    },
+    hysteria2: {
+      name: user,
+      password: mixedPassword,
+    },
+  }
+}
+
+export function createClient<T extends Client>(json?: Partial<T>): Client {
+  // structuredClone, and a local name rather than writing one onto the shared
+  // default: both would otherwise leak into every client created afterwards.
+  const defaultObject: Client = { ...structuredClone(defaultClient), name: RandomUtil.randomSeq(8), ...(json || {}) }
+
+  // Add missing config
+  defaultObject.config = { ...randomConfigs(defaultObject.name), ...defaultObject.config }
+  
+  return defaultObject
+}

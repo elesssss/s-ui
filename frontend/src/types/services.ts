@@ -1,0 +1,138 @@
+import { Listen } from "./inbounds"
+import { iTls, oTls } from "./tls"
+import { Dial } from "./dial"
+
+export const SrvTypes = {
+  DERP: 'derp',
+  Resolved: 'resolved',
+  SSMAPI: 'ssm-api',
+  OCM: 'ocm', 
+  CCM: 'ccm', 
+  API: 'api',
+  OOMKiller: 'oom-killer',
+  HysteriaRealm: 'hysteria-realm',
+}
+
+type SrvType = typeof SrvTypes[keyof typeof SrvTypes]
+
+interface SrvBasics extends Listen {
+  id: number
+  type: SrvType
+  tag: string
+  tls_id: number
+}
+
+// A tailscale control server the DERP node verifies clients against, or meshes
+// with. Both carry dial options, which Dial.vue edits in place.
+export interface DerpEndpoint extends Dial {
+  url?: string
+  server?: string
+  server_port?: number
+  host?: string
+  tls?: oTls
+}
+
+// The embedded STUN server. Listen.vue edits the listen fields inside it.
+export interface DerpStun extends Partial<Listen> {
+  enabled?: boolean
+}
+
+export interface DERP extends SrvBasics {
+  tls: iTls
+  config_path: string
+  verify_client_endpoint?: string[]
+  verify_client_url?: DerpEndpoint[]
+  home?: string
+  mesh_with?: DerpEndpoint[]
+  mesh_psk?: string
+  mesh_psk_file?: string
+  stun?: DerpStun
+}
+
+export type Resolved = SrvBasics
+
+export interface SSMAPI extends SrvBasics {
+  // Keyed by path; a path serves either one shadowsocks inbound tag or several.
+  servers: Record<string, string | string[]>
+  tls?: iTls
+}
+
+export interface OCM extends SrvBasics {
+  credential_path?: string
+  usages_path?: string
+  users?: { name: string; token: string }[]
+  headers?: { [key: string]: string }
+  detour?: string
+}
+
+export interface CCM extends SrvBasics {
+  credential_path?: string
+  usages_path?: string
+  users?: { name: string; token: string }[]
+  headers?: { [key: string]: string }
+  detour?: string
+}
+
+export interface API extends SrvBasics {
+  secret?: string
+  access_control_allow_origin?: string[]
+  access_control_allow_private_network?: boolean
+  // Accepts a bool, a path string, or the full object form.
+  dashboard?: boolean | string | {
+    enabled?: boolean
+    path?: string
+    download_url?: string
+    update_interval?: string
+  }
+  tls?: iTls
+}
+
+// oom-killer does not listen. It extends SrvBasics so it stays assignable to
+// Srv, but Service.vue keeps it out of the listen and TLS sections and strips
+// those fields before saving.
+export interface OOMKiller extends SrvBasics {
+  memory_limit?: string
+  safety_margin?: string
+  min_interval?: string
+  max_interval?: string
+}
+
+// The rendezvous hysteria2 inbounds and outbounds meet on for NAT traversal.
+// Without TLS it serves plain HTTP/1.1.
+export interface HysteriaRealm extends SrvBasics {
+  tls?: iTls
+  users: { name: string; token: string; max_realms?: number }[]
+}
+
+type InterfaceMap = {
+  derp: DERP
+  resolved: Resolved
+  'ssm-api': SSMAPI
+  ocm: OCM
+  ccm: CCM
+  api: API
+  'oom-killer': OOMKiller
+  'hysteria-realm': HysteriaRealm
+}
+
+export type Srv = InterfaceMap[keyof InterfaceMap]
+
+const defaultValues: Record<SrvType, Srv> = {
+  derp: <DERP>{ type: 'derp', config_path: '', tls_id:0 },
+  resolved: <Resolved>{ type: 'resolved', listen: '::', listen_port: 53 },
+  'ssm-api': <SSMAPI>{ type: 'ssm-api', tls_id: 0, servers: {} },
+  ocm: { type: 'ocm', id: 0, tag: '', listen: '::', listen_port: 8080, tls_id: 0, users: [] } as OCM,
+  ccm: { type: 'ccm', id: 0, tag: '', listen: '::', listen_port: 8080, tls_id: 0, users: [] } as CCM,
+  api: <API>{ type: 'api', listen: '127.0.0.1', listen_port: 9090, tls_id: 0 },
+  'oom-killer': <OOMKiller>{ type: 'oom-killer' },
+  'hysteria-realm': { type: 'hysteria-realm', id: 0, tag: '', listen: '::', listen_port: 8443, tls_id: 0, users: [] } as HysteriaRealm,
+}
+
+export function createSrv<T extends Srv>(type: string, json?: Partial<T>): Srv {
+  // structuredClone, not a spread: the defaults table is module state, and a
+  // spread copies only the top level, so every instance would share the nested
+  // objects and arrays inside it. Editing one form then leaked into the table
+  // and into every object created afterwards.
+  const defaultObject: Srv = { ...structuredClone(defaultValues[type]), ...(json || {}) }
+  return defaultObject
+}

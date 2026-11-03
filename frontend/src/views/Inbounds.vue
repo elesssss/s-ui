@@ -1,0 +1,336 @@
+<template>
+  <InboundVue 
+    :id="modal.id"
+    v-model="modal.visible"
+    :visible="modal.visible"
+    :in-tags="inTags"
+    :tls-configs="tlsConfigs"
+    @close="closeModal"
+  />
+  <Stats
+    v-model="stats.visible"
+    :visible="stats.visible"
+    :resource="stats.resource"
+    :tag="stats.tag"
+    @close="closeStats"
+  />
+  <Sessions
+    v-model="sessions.visible"
+    :visible="sessions.visible"
+    resource="inbound"
+    :tag="sessions.tag"
+    @close="closeSessions"
+  />
+  <v-row>
+    <v-col
+      cols="12"
+      justify="center"
+      align="center"
+    >
+      <v-btn
+        color="primary"
+        @click="showModal(0)"
+      >
+        {{ $t('actions.add') }}
+      </v-btn>
+    </v-col>
+  </v-row>
+  <v-row>
+    <v-col
+      v-for="(item, index) in <any[]>inbounds"
+      :key="item.tag"
+      cols="12"
+      sm="4"
+      md="3"
+      lg="2"
+    >
+      <v-card
+        rounded="xl"
+        elevation="5"
+        min-width="200"
+        :title="item.tag"
+        :class="{ 'inbound-disabled': item.enable === false }"
+      >
+        <template #append>
+          <v-switch
+            :model-value="item.enable !== false"
+            :loading="toggling[item.id]"
+            :disabled="toggling[item.id]"
+            :aria-label="$t('enable')"
+            color="success"
+            density="compact"
+            hide-details
+            @update:model-value="(val:any) => toggleEnable(item, !!val)"
+          />
+        </template>
+        <v-card-subtitle style="margin-top: -15px;">
+          <v-row>
+            <v-col>{{ item.type }}</v-col>
+          </v-row>
+        </v-card-subtitle>
+        <v-card-text>
+          <v-row>
+            <v-col>{{ $t('in.addr') }}</v-col>
+            <v-col>
+              {{ item.listen }}
+            </v-col>
+          </v-row>
+          <v-row>
+            <v-col>{{ $t('in.port') }}</v-col>
+            <v-col>
+              {{ item.listen_port }}
+            </v-col>
+          </v-row>
+          <v-row>
+            <v-col>{{ $t('objects.tls') }}</v-col>
+            <v-col>
+              {{ item.tls_id > 0 ? $t('enable') : $t('disable') }}
+            </v-col>
+          </v-row>
+          <v-row>
+            <v-col>{{ $t('pages.clients') }}</v-col>
+            <v-col>
+              <template v-if="item.users">
+                <v-tooltip
+                  v-if="item.users.length > 0"
+                  activator="parent"
+                  dir="ltr"
+                  location="bottom"
+                >
+                  <span
+                    v-for="u in item.users"
+                    :key="u"
+                  >{{ u }}<br></span>
+                </v-tooltip>
+                {{ item.users.length }}
+              </template>
+              <template v-else>
+                -
+              </template>
+            </v-col>
+          </v-row>
+          <v-row>
+            <v-col>{{ $t('online') }}</v-col>
+            <v-col>
+              <template v-if="onlines.includes(item.tag)">
+                <v-chip
+                  density="comfortable"
+                  size="small"
+                  color="success"
+                  variant="flat"
+                  link
+                  @click="showSessions(item.tag)"
+                >
+                  {{ $t('online') }}
+                  <v-tooltip
+                    activator="parent"
+                    location="top"
+                    :text="$t('sessions.title')"
+                  />
+                </v-chip>
+              </template>
+              <template v-else>
+                -
+              </template>
+            </v-col>
+          </v-row>
+        </v-card-text>
+        <v-divider />
+        <v-card-actions style="padding: 0;">
+          <v-btn
+            :aria-label="$t('actions.edit')"
+            icon="mdi-file-edit"
+            @click="showModal(item.id)"
+          >
+            <v-icon />
+            <v-tooltip
+              activator="parent"
+              location="top"
+              :text="$t('actions.edit')"
+            />
+          </v-btn>
+          <v-btn
+            :aria-label="$t('actions.del')"
+            icon="mdi-file-remove"
+            style="margin-inline-start:0;"
+            color="warning"
+            @click="delOverlay[index] = true"
+          >
+            <v-icon />
+            <v-tooltip
+              activator="parent"
+              location="top"
+              :text="$t('actions.del')"
+            />
+          </v-btn>
+          <v-overlay
+            v-model="delOverlay[index]"
+            contained
+            class="align-center justify-center"
+          >
+            <v-card
+              :title="$t('actions.del')"
+              rounded="lg"
+            >
+              <v-divider />
+              <v-card-text>{{ $t('confirm') }}</v-card-text>
+              <v-card-actions>
+                <v-btn
+                  color="error"
+                  variant="outlined"
+                  @click="delInbound(item.id)"
+                >
+                  {{ $t('yes') }}
+                </v-btn>
+                <v-btn
+                  color="success"
+                  variant="outlined"
+                  @click="delOverlay[index] = false"
+                >
+                  {{ $t('no') }}
+                </v-btn>
+              </v-card-actions>
+            </v-card>
+          </v-overlay>
+          <v-btn
+            :aria-label="$t('actions.clone')"
+            icon="mdi-content-duplicate"
+            :loading="cloneLoading"
+            @click="clone(item.id)"
+          >
+            <v-icon />
+            <v-tooltip
+              activator="parent"
+              location="top"
+              :text="$t('actions.clone')"
+            />
+          </v-btn>
+          <v-btn
+            v-if="Data().enableTraffic"
+            :aria-label="$t('stats.graphTitle')"
+            icon="mdi-chart-line"
+            @click="showStats(item.tag)"
+          >
+            <v-icon />
+            <v-tooltip
+              activator="parent"
+              location="top"
+              :text="$t('stats.graphTitle')"
+            />
+          </v-btn>
+        </v-card-actions>
+      </v-card>      
+    </v-col>
+  </v-row>
+</template>
+
+<script lang="ts" setup>
+import Data from '@/store/modules/data'
+import InboundVue from '@/layouts/modals/Inbound.vue'
+import Stats from '@/layouts/modals/Stats.vue'
+import Sessions from '@/layouts/modals/Sessions.vue'
+import { computed, ref } from 'vue'
+import { createInbound, Inbound } from '@/types/inbounds'
+import { tls } from '@/types/tls'
+import RandomUtil from '@/plugins/randomUtil'
+
+const inbounds = computed((): Inbound[] => {
+  return <Inbound[]> Data().inbounds
+})
+
+const tlsConfigs = computed((): tls[] => {
+  return Data().tlsConfigs
+})
+
+const inTags = computed((): string[] => {
+  return [...(inbounds.value?.map(i => i.tag) ?? []), ...(Data().endpoints?.filter(e => e.listen_port > 0).map(e => e.tag) ?? [])]
+})
+
+const onlines = computed(() => {
+  return Data().onlines.inbound?? []
+})
+
+const modal = ref({
+  visible: false,
+  id: 0,
+})
+
+let delOverlay = ref(new Array<boolean>)
+
+const showModal = (id: number) => {
+  modal.value.id = id
+  modal.value.visible = true
+}
+const closeModal = () => {
+  modal.value.visible = false
+}
+
+const delInbound = async (id: number) => {
+  const index = inbounds.value.findIndex(i => i.id == id)
+  const tag = inbounds.value[index].tag
+
+  const success = await Data().save("inbounds", "del", tag)
+  if (success) delOverlay.value[index] = false
+}
+
+const toggling = ref<Record<number, boolean>>({})
+
+const toggleEnable = async (item: Inbound, val: boolean) => {
+  if ((item.enable !== false) === val) return
+  toggling.value = { ...toggling.value, [item.id]: true }
+  const full = (await Data().loadInbounds([item.id]))[0]
+  if (full?.id) {
+    full.enable = val
+    await Data().save("inbounds", "edit", full)
+  }
+  toggling.value = { ...toggling.value, [item.id]: false }
+}
+
+let cloneLoading = ref(false)
+
+const clone = async (id: number) => {
+  cloneLoading.value = true
+  const inboundArray = await Data().loadInbounds([id])
+  const inbound = inboundArray[0]
+  let newTag = inbound.type + "-" + RandomUtil.randomSeq(3)
+  const newInbound = createInbound(inbound.type, { ...inbound,
+    id: 0,
+    tag: newTag,
+    listen_port: RandomUtil.randomIntRange(10000, 60000),
+  })
+  await Data().save("inbounds", "new", newInbound)
+  cloneLoading.value = false
+}
+
+const stats = ref({
+  visible: false,
+  resource: "inbound",
+  tag: "",
+})
+
+const showStats = (tag: string) => {
+  stats.value.tag = tag
+  stats.value.visible = true
+}
+const closeStats = () => {
+  stats.value.visible = false
+}
+
+const sessions = ref({
+  visible: false,
+  tag: "",
+})
+
+const showSessions = (tag: string) => {
+  sessions.value.tag = tag
+  sessions.value.visible = true
+}
+const closeSessions = () => {
+  sessions.value.visible = false
+}
+</script>
+<style scoped>
+.inbound-disabled {
+  opacity: 0.6;
+}
+</style>

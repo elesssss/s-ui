@@ -1,0 +1,764 @@
+<template>
+  <v-row style="margin-bottom: 10px;">
+    <v-col
+      cols="12"
+      justify="center"
+      align="center"
+    >
+      <v-btn
+        variant="outlined"
+        color="warning"
+        :loading="loading"
+        :disabled="stateChange"
+        @click="saveConfig"
+      >
+        {{ $t('actions.save') }}
+      </v-btn>
+    </v-col>
+  </v-row>
+  <HttpClientVue
+    v-model="httpClientModal.visible"
+    :visible="httpClientModal.visible"
+    :index="httpClientModal.index"
+    :data="httpClientModal.data"
+    :tags="httpClientTags"
+    @close="httpClientModal.visible = false"
+    @save="saveHttpClient"
+  />
+  <v-expansion-panels>
+    <v-expansion-panel>
+      <v-expansion-panel-title>
+        {{ $t('basic.log.title') }}
+        <v-spacer />
+        <DocLink
+          :href="LOG_DOC"
+          @click.stop
+        />
+      </v-expansion-panel-title>
+      <v-expansion-panel-text>
+        <v-row>
+          <v-col
+            cols="12"
+            sm="6"
+            md="3"
+            lg="2"
+          >
+            <v-switch
+              v-model="appConfig.log.disabled"
+              color="primary"
+              :label="$t('disable')"
+              hide-details
+            />
+          </v-col>
+          <v-col
+            cols="12"
+            sm="6"
+            md="3"
+            lg="2"
+          >
+            <v-select
+              v-model="appConfig.log.level"
+              hide-details
+              :label="$t('basic.log.level')"
+              :items="levels"
+              clearable
+              @click:clear="delete appConfig.log.level"
+            />
+          </v-col>
+          <v-col
+            cols="12"
+            sm="6"
+            md="3"
+            lg="2"
+          >
+            <v-text-field
+              v-model="appConfig.log.output"
+              hide-details
+              :label="$t('basic.log.output')"
+            />
+          </v-col>
+          <v-col
+            cols="12"
+            sm="6"
+            md="3"
+            lg="2"
+          >
+            <v-switch
+              v-model="appConfig.log.timestamp"
+              color="primary"
+              :label="$t('basic.log.timestamp')"
+              hide-details
+            />
+          </v-col>
+        </v-row>
+      </v-expansion-panel-text>
+    </v-expansion-panel>
+    <v-expansion-panel>
+      <v-expansion-panel-title>
+        NTP
+        <v-spacer />
+        <DocLink
+          :href="NTP_DOC"
+          @click.stop
+        />
+      </v-expansion-panel-title>
+      <v-expansion-panel-text>
+        <v-row>
+          <v-col
+            cols="12"
+            sm="6"
+            md="3"
+            lg="2"
+          >
+            <v-switch
+              v-model="enableNtp"
+              color="primary"
+              :label="$t('enable')"
+              hide-details
+            />
+          </v-col>
+          <v-col
+            v-if="appConfig.ntp?.enabled"
+            cols="12"
+            sm="6"
+            md="3"
+            lg="2"
+          >
+            <v-text-field
+              v-model="appConfig.ntp.server"
+              hide-details
+              :label="$t('out.addr')"
+            />
+          </v-col>
+          <v-col
+            v-if="appConfig.ntp?.enabled"
+            cols="12"
+            sm="6"
+            md="3"
+            lg="2"
+          >
+            <v-text-field
+              v-model.number="appConfig.ntp.server_port"
+              hide-details
+              type="number"
+              clearable
+              :label="$t('out.port')"
+              @click:clear="delete appConfig.ntp?.server_port"
+            />
+          </v-col>
+          <v-col
+            v-if="appConfig.ntp?.enabled"
+            cols="12"
+            sm="6"
+            md="3"
+            lg="2"
+          >
+            <v-text-field
+              v-model="ntpInterval"
+              hide-details
+              :suffix="$t('date.m')"
+              min="0"
+              type="number"
+              :label="$t('ruleset.interval')"
+            />
+          </v-col>
+        </v-row>
+        <Dial
+          v-if="appConfig.ntp?.enabled"
+          :dial="appConfig.ntp"
+        />
+      </v-expansion-panel-text>
+    </v-expansion-panel>
+    <v-expansion-panel>
+      <v-expansion-panel-title>
+        {{ $t('basic.httpClient.title') }}
+      </v-expansion-panel-title>
+      <v-expansion-panel-text>
+        <!-- Shared transports for everything sing-box downloads: remote
+             rule-sets, the API dashboard, certificate providers. Each is
+             referenced by its tag. -->
+        <v-row>
+          <v-col cols="12">
+            <v-btn
+              color="primary"
+              variant="tonal"
+              @click="showHttpClientModal(-1)"
+            >
+              {{ $t('actions.add') }}
+            </v-btn>
+          </v-col>
+        </v-row>
+        <v-data-table
+          :headers="httpClientHeaders"
+          :items="httpClients"
+          :no-data-text="$t('basic.httpClient.none')"
+          item-value="tag"
+          density="compact"
+          hide-default-footer
+          items-per-page="-1"
+        >
+          <template #item.version="{ value }">
+            {{ versionName(value) }}
+          </template>
+          <template #item.detour="{ value }">
+            {{ value ?? '-' }}
+          </template>
+          <template #item.engine="{ value }">
+            {{ value ?? '-' }}
+          </template>
+          <template #item.actions="{ index }">
+            <v-btn
+              :aria-label="$t('actions.edit')"
+              icon="mdi-file-edit"
+              variant="text"
+              density="compact"
+              @click="showHttpClientModal(index)"
+            >
+              <v-icon />
+              <v-tooltip
+                activator="parent"
+                location="top"
+                :text="$t('actions.edit')"
+              />
+            </v-btn>
+            <v-btn
+              :aria-label="$t('actions.del')"
+              icon="mdi-file-remove"
+              variant="text"
+              density="compact"
+              color="warning"
+              @click="delHttpClient(index)"
+            >
+              <v-icon />
+              <v-tooltip
+                activator="parent"
+                location="top"
+                :text="$t('actions.del')"
+              />
+            </v-btn>
+          </template>
+        </v-data-table>
+      </v-expansion-panel-text>
+    </v-expansion-panel>
+    <v-expansion-panel>
+      <v-expansion-panel-title>
+        Experimental
+        <v-spacer />
+        <DocLink
+          :href="EXPERIMENTAL_DOC"
+          @click.stop
+        />
+      </v-expansion-panel-title>
+      <v-expansion-panel-text>
+        <v-row>
+          <v-col class="v-card-subtitle">
+            Cache File <DocLink :href="CACHE_FILE_DOC" />
+          </v-col>
+        </v-row>
+        <v-row>
+          <v-col
+            cols="12"
+            sm="6"
+            md="3"
+            lg="2"
+          >
+            <v-switch
+              v-model="enableCacheFile"
+              color="primary"
+              :label="$t('enable')"
+              hide-details
+            />
+          </v-col>
+          <v-col
+            v-if="appConfig.experimental.cache_file"
+            cols="12"
+            sm="6"
+            md="3"
+            lg="2"
+          >
+            <v-text-field
+              v-model="appConfig.experimental.cache_file.path"
+              hide-details
+              :label="$t('transport.path')"
+            />
+          </v-col>
+          <v-col
+            v-if="appConfig.experimental.cache_file"
+            cols="12"
+            sm="6"
+            md="3"
+            lg="2"
+          >
+            <v-text-field
+              v-model="appConfig.experimental.cache_file.cache_id"
+              hide-details
+              label="Cache ID"
+            />
+          </v-col>
+          <v-col
+            v-if="appConfig.experimental.cache_file"
+            cols="12"
+            sm="6"
+            md="3"
+            lg="2"
+          >
+            <v-switch
+              v-model="appConfig.experimental.cache_file.store_fakeip"
+              color="primary"
+              :label="$t('basic.exp.storeFakeIp')"
+              hide-details
+            />
+          </v-col>
+        </v-row>
+        <v-row>
+          <v-col class="v-card-subtitle">
+            Clash API <DocLink :href="CLASH_API_DOC" />
+          </v-col>
+        </v-row>
+        <v-row>
+          <v-col
+            cols="12"
+            sm="6"
+            md="3"
+            lg="2"
+          >
+            <v-switch
+              v-model="enableClashApi"
+              color="primary"
+              :label="$t('enable')"
+              hide-details
+            />
+          </v-col>
+          <template v-if="appConfig.experimental.clash_api">
+            <v-col
+              cols="12"
+              sm="6"
+              md="3"
+              lg="2"
+            >
+              <v-text-field
+                v-model="appConfig.experimental.clash_api.external_controller"
+                hide-details
+                :label="$t('basic.exp.extController')"
+              />
+            </v-col>
+            <v-col
+              cols="12"
+              sm="6"
+              md="3"
+              lg="2"
+            >
+              <v-text-field
+                v-model="appConfig.experimental.clash_api.secret"
+                hide-details
+                :label="$t('basic.exp.secret')"
+              />
+            </v-col>
+          </template>
+        </v-row>
+        <v-row v-if="appConfig.experimental.clash_api">
+          <v-col
+            cols="12"
+            sm="6"
+            md="3"
+            lg="2"
+          >
+            <v-text-field
+              v-model="appConfig.experimental.clash_api.external_ui"
+              hide-details
+              :label="$t('basic.exp.extUi')"
+            />
+          </v-col>
+          <v-col
+            cols="12"
+            sm="8"
+            md="4"
+          >
+            <v-text-field
+              v-model="appConfig.experimental.clash_api.external_ui_download_url"
+              hide-details
+              :label="$t('basic.exp.extUiDownloadUrl')"
+            />
+          </v-col>
+          <v-col
+            cols="12"
+            sm="6"
+            md="3"
+            lg="2"
+          >
+            <v-select
+              v-model="appConfig.experimental.clash_api.external_ui_download_detour"
+              hide-details
+              :items="outboundTags"
+              clearable
+              :label="$t('basic.exp.extUiDownloadDetour')"
+              @click:clear="delete appConfig.experimental.clash_api.external_ui_download_detour"
+            />
+          </v-col>
+        </v-row>
+        <v-row v-if="appConfig.experimental.clash_api">
+          <v-col
+            cols="12"
+            sm="6"
+            md="3"
+            lg="2"
+          >
+            <v-text-field
+              v-model="appConfig.experimental.clash_api.default_mode"
+              hide-details
+              :label="$t('basic.exp.defaultMode')"
+            />
+          </v-col>
+          <v-col
+            cols="12"
+            sm="8"
+            md="4"
+          >
+            <v-text-field 
+              v-model="origin"
+              hide-details
+              :label="$t('basic.exp.allowOrigin') + ' ' + $t('commaSeparated')"
+            />
+          </v-col>
+          <v-col
+            cols="12"
+            sm="6"
+            md="3"
+            lg="2"
+          >
+            <v-switch
+              v-model="appConfig.experimental.clash_api.access_control_allow_private_network"
+              color="primary"
+              :label="$t('basic.exp.allowPrivate')"
+              hide-details
+            />
+          </v-col>
+        </v-row>
+        <v-row>
+          <v-col class="v-card-subtitle">
+            V2Ray API <DocLink :href="V2RAY_API_DOC" />
+          </v-col>
+        </v-row>
+        <v-row>
+          <v-col
+            cols="12"
+            sm="6"
+            md="3"
+            lg="2"
+          >
+            <v-switch
+              v-model="enableV2rayApi"
+              color="primary"
+              :label="$t('enable')"
+              hide-details
+            />
+          </v-col>
+          <template v-if="appConfig.experimental.v2ray_api">
+            <v-col
+              cols="12"
+              sm="6"
+              md="3"
+              lg="2"
+            >
+              <v-text-field
+                v-model="appConfig.experimental.v2ray_api.listen"
+                hide-details
+                :label="$t('objects.listen')"
+              />
+            </v-col>
+            <v-col
+              cols="12"
+              sm="6"
+              md="3"
+              lg="2"
+            >
+              <v-switch
+                v-model="appConfig.experimental.v2ray_api.stats.enabled"
+                color="primary"
+                :label="$t('stats.enable')"
+                hide-details
+              />
+            </v-col>
+          </template>
+        </v-row>
+        <v-row v-if="appConfig.experimental.v2ray_api?.stats?.enabled">
+          <v-col
+            cols="12"
+            sm="6"
+          >
+            <v-select
+              v-model="appConfig.experimental.v2ray_api.stats.inbounds"
+              hide-details
+              :label="$t('pages.inbounds')"
+              multiple
+              chips
+              closable-chips
+              :items="inboundTags"
+            />
+          </v-col>
+          <v-col
+            cols="12"
+            sm="6"
+          >
+            <v-select
+              v-model="appConfig.experimental.v2ray_api.stats.outbounds"
+              hide-details
+              :label="$t('pages.outbounds')"
+              multiple
+              chips
+              closable-chips
+              :items="outboundTags"
+            />
+          </v-col>
+          <v-col
+            cols="12"
+            sm="6"
+          >
+            <v-select
+              v-model="appConfig.experimental.v2ray_api.stats.users"
+              hide-details
+              :label="$t('pages.clients')"
+              multiple
+              chips
+              closable-chips
+              :items="clientNames"
+            />
+          </v-col>
+        </v-row>
+        <v-row>
+          <v-col class="v-card-subtitle">
+            Debug
+          </v-col>
+        </v-row>
+        <v-row>
+          <v-col
+            cols="12"
+            sm="6"
+            md="3"
+            lg="2"
+          >
+            <v-switch
+              v-model="enableDebug"
+              color="primary"
+              :label="$t('enable')"
+              hide-details
+            />
+          </v-col>
+          <template v-if="appConfig.experimental.debug">
+            <v-col
+              cols="12"
+              sm="6"
+              md="3"
+              lg="2"
+            >
+              <v-text-field
+                v-model="appConfig.experimental.debug.listen"
+                hide-details
+                clearable
+                placeholder="127.0.0.1:6060"
+                :label="$t('objects.listen')"
+                @click:clear="delete appConfig.experimental.debug.listen"
+              />
+            </v-col>
+            <v-col
+              cols="12"
+              sm="6"
+              md="3"
+              lg="2"
+            >
+              <v-text-field
+                v-model="debugMemoryLimit"
+                hide-details
+                clearable
+                placeholder="200mb"
+                :label="$t('types.oomKiller.memoryLimit')"
+              />
+            </v-col>
+            <v-col
+              cols="12"
+              sm="6"
+              md="3"
+              lg="2"
+            >
+              <v-text-field
+                v-model.number="debugGcPercent"
+                type="number"
+                hide-details
+                clearable
+                placeholder="100"
+                :label="$t('basic.exp.gcPercent')"
+              />
+            </v-col>
+          </template>
+        </v-row>
+      </v-expansion-panel-text>
+    </v-expansion-panel>
+  </v-expansion-panels>
+</template>
+
+<script lang="ts" setup>
+import Data from '@/store/modules/data'
+import Dial from '@/components/Dial.vue'
+import HttpClientVue from '@/layouts/modals/HttpClient.vue'
+import DocLink from '@/components/DocLink.vue'
+import { computed, ref, onBeforeMount } from 'vue'
+import { Config, Ntp } from '@/types/config'
+import { HttpClient } from '@/types/httpClient'
+import { FindDiff } from '@/plugins/utils'
+import { i18n } from '@/locales'
+import { LOG_DOC, NTP_DOC, EXPERIMENTAL_DOC, CACHE_FILE_DOC, CLASH_API_DOC, V2RAY_API_DOC } from '@/plugins/docs'
+
+const oldConfig = ref({})
+const loading = ref(false)
+
+const appConfig = computed((): Config => {
+  return <Config> Data().config
+})
+
+onBeforeMount(async () => {
+  loading.value = true
+  while (Data().lastLoad == 0) {
+    await new Promise(resolve => setTimeout(resolve, 100))
+  }
+  oldConfig.value = JSON.parse(JSON.stringify(Data().config))
+  loading.value = false
+})
+
+const stateChange = computed(() => {
+  return FindDiff.deepCompare(appConfig.value,oldConfig.value)
+})
+
+const saveConfig = async () => {
+  loading.value = true
+  const success = await Data().save("config", "set", appConfig.value)
+  if (success) {
+    oldConfig.value = JSON.parse(JSON.stringify(Data().config))
+    loading.value = false
+  }
+}
+
+const inboundTags = computed((): string[] => {
+  return [...(Data().inbounds?.map(i => i.tag) ?? []), ...(Data().endpoints?.filter(e => e.listen_port > 0).map(e => e.tag) ?? [])]
+})
+
+const clientNames = computed((): string[] => {
+  const clients = Data().clients
+  return clients?.map(c => c.name)
+})
+
+const outboundTags = computed((): string[] => {
+  return [...(Data().outbounds?.map(o => o.tag) ?? []), ...(Data().endpoints?.map(e => e.tag) ?? [])]
+})
+
+const levels = ["trace", "debug", "info", "warn", "error", "fatal", "panic"]
+
+// Shared HTTP clients live at the top level of the config, beside log and dns.
+const httpClients = computed((): HttpClient[] => {
+  const config = appConfig.value
+  if (!Array.isArray(config.http_clients)) config.http_clients = []
+  return config.http_clients
+})
+
+const httpClientTags = computed((): string[] => httpClients.value.map(c => c.tag))
+
+const versionNames: Record<string, string> = { 0: 'Auto', 1: 'HTTP/1.1', 2: 'HTTP/2', 3: 'HTTP/3' }
+const versionName = (version?: number): string => versionNames[version ?? 0] ?? 'Auto'
+
+const httpClientHeaders = computed(() => [
+  { title: i18n.global.t('objects.tag'), key: 'tag' },
+  { title: i18n.global.t('basic.httpClient.version'), key: 'version' },
+  { title: i18n.global.t('basic.httpClient.engine'), key: 'engine' },
+  { title: i18n.global.t('listen.detour'), key: 'detour' },
+  { title: '', key: 'actions', sortable: false, align: 'end' as const},
+])
+
+const httpClientModal = ref({ visible: false, index: -1, data: "" })
+
+const showHttpClientModal = (index: number) => {
+  httpClientModal.value.index = index
+  httpClientModal.value.data = index == -1 ? '' : JSON.stringify(httpClients.value[index])
+  httpClientModal.value.visible = true
+}
+
+const saveHttpClient = (data: HttpClient) => {
+  if (httpClientModal.value.index == -1) httpClients.value.push(data)
+  else httpClients.value[httpClientModal.value.index] = data
+  httpClientModal.value.visible = false
+}
+
+const delHttpClient = (index: number) => { httpClients.value.splice(index, 1) }
+
+const enableNtp = computed({
+  get() { return appConfig.value.ntp?.enabled?? false },
+  set(v:boolean) { 
+    if (v){
+      appConfig.value.ntp = <Ntp>{ enabled: true, server: 'time.apple.com', server_port: 123, interval: '30m'}
+    } else { appConfig.value.ntp = <Ntp>{}  }
+  }
+})
+
+const ntpInterval = computed({
+  get(): number | null { return appConfig.value.ntp?.interval? parseInt(appConfig.value.ntp?.interval.replace('m','')) : null },
+  set(v:number) {
+    if (!appConfig.value.ntp) return
+    if (v > 0) appConfig.value.ntp.interval = v + 'm'
+    else delete appConfig.value.ntp.interval
+  }
+})
+
+const enableCacheFile = computed({
+  get() { return appConfig.value.experimental.cache_file?.enabled?? false },
+  set(v:boolean) { 
+    if (v){
+      appConfig.value.experimental.cache_file = { enabled: true }
+    } else { delete appConfig.value.experimental.cache_file  }
+  }
+})
+
+const enableClashApi = computed({
+  get() { return appConfig.value.experimental.clash_api != undefined },
+  set(v:boolean) { appConfig.value.experimental.clash_api = v ? { external_controller: '127.0.0.1:9090' } : undefined }
+})
+
+const enableV2rayApi = computed({
+  get() { return appConfig.value.experimental.v2ray_api != undefined },
+  set(v:boolean) { appConfig.value.experimental.v2ray_api = v ? { listen: '127.0.0.1:8080', stats: { enabled: false, inbounds: [], outbounds: [], users: [] }} : undefined }
+})
+
+const enableDebug = computed({
+  get() { return appConfig.value.experimental.debug != undefined },
+  set(v:boolean) { appConfig.value.experimental.debug = v ? {} : undefined }
+})
+
+// sing-box rejects an empty memory_limit, so a cleared field drops the key.
+const debugMemoryLimit = computed({
+  get() { return appConfig.value.experimental.debug?.memory_limit ?? '' },
+  set(v:string|null) {
+    if (!appConfig.value.experimental.debug) return
+    if (v) appConfig.value.experimental.debug.memory_limit = v
+    else delete appConfig.value.experimental.debug.memory_limit
+  }
+})
+
+const debugGcPercent = computed({
+  get() { return appConfig.value.experimental.debug?.gc_percent },
+  set(v:number|string|null) {
+    if (!appConfig.value.experimental.debug) return
+    if (typeof v == 'number') appConfig.value.experimental.debug.gc_percent = v
+    else delete appConfig.value.experimental.debug.gc_percent
+  }
+})
+
+const origin = computed({
+  get() { return appConfig.value.experimental.clash_api?.access_control_allow_origin &&
+    appConfig.value.experimental.clash_api.access_control_allow_origin.length>0 ? appConfig.value.experimental.clash_api.access_control_allow_origin.join(',') : '' },
+  set(v:string) {
+    // Guarded on clash_api, not on the field itself. The old test required the
+    // list to already exist, so the input silently discarded everything typed
+    // into it until one was set some other way.
+    if (!appConfig.value.experimental.clash_api) return
+    appConfig.value.experimental.clash_api.access_control_allow_origin =
+      v.length > 0 ? v.split(',').map(o => o.trim()).filter(o => o.length > 0) : undefined
+  }
+})
+</script>
