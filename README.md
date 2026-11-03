@@ -23,10 +23,10 @@ Account changes still rebuild the affected inbound and disconnect its sessions. 
 The package includes tests for session identity, TCP/UDP forwarding, negotiated MTU, logs, scope cleanup and credential selection. The Test workflow also runs policy failure/ownership regressions and the full PPP/IPsec pipeline in an isolated Linux network namespace, including DNS and routing changes over the same dial-up session. These test definitions do not imply they have already passed on this checkout. Real Windows/router client compatibility and long-running rekey sessions require separate acceptance testing.
 **An Advanced Web Panel • Built on SagerNet/Sing-Box**
 
-![](https://img.shields.io/github/v/release/alireza0/s-ui.svg)
+![](https://img.shields.io/github/v/release/bryet/s-ui.svg)
 ![S-UI Docker pull](https://img.shields.io/docker/pulls/alireza7/s-ui.svg)
-[![Go Report Card](https://goreportcard.com/badge/github.com/alireza0/s-ui)](https://goreportcard.com/report/github.com/alireza0/s-ui)
-[![Downloads](https://img.shields.io/github/downloads/alireza0/s-ui/total.svg)](https://img.shields.io/github/downloads/alireza0/s-ui/total.svg)
+[![Go Report Card](https://goreportcard.com/badge/github.com/bryet/s-ui)](https://goreportcard.com/report/github.com/bryet/s-ui)
+[![Downloads](https://img.shields.io/github/downloads/bryet/s-ui/total.svg)](https://img.shields.io/github/downloads/bryet/s-ui/total.svg)
 [![License](https://img.shields.io/badge/license-GPL%20V3-blue.svg?longCache=true)](https://www.gnu.org/licenses/gpl-3.0.en.html)
 
 > **Disclaimer:** This project is only for personal learning and communication, please do not use it for illegal purposes, please do not use it in a production environment
@@ -62,22 +62,22 @@ The package includes tests for session identity, TCP/UDP forwarding, negotiated 
 
 ## Screenshots
 
-!["Main"](https://github.com/alireza0/s-ui-frontend/raw/main/media/main.png)
+!["Main"](https://github.com/bryet/s-ui-frontend/raw/main/media/main.png)
 
-[Other UI Screenshots](https://github.com/alireza0/s-ui-frontend/blob/main/screenshots.md)
+[Other UI Screenshots](https://github.com/bryet/s-ui-frontend/blob/main/screenshots.md)
 
 ## Documentation
 
-Full documentation lives in the [Wiki](https://github.com/alireza0/s-ui/wiki):
+Full documentation lives in the [Wiki](https://github.com/bryet/s-ui/wiki):
 
 | Page | Contents |
 |------|----------|
-| [Subscription Service](https://github.com/alireza0/s-ui/wiki/Subscription-Service) | Subscription URLs, the three formats, response headers |
-| [Subscription JSON Template](https://github.com/alireza0/s-ui/wiki/Subscription-JSON-Template) | Structure and supported keys of the sing-box subscription template |
-| [Subscription Clash Template](https://github.com/alireza0/s-ui/wiki/Subscription-Clash-Template) | The Clash.Meta template, proxy groups and filters |
-| [API Documentation](https://github.com/alireza0/s-ui/wiki/API-Documentation) | The token-authenticated REST API (`/apiv2`) |
-| [Configuration Objects](https://github.com/alireza0/s-ui/wiki/Configuration-Objects) | Shape of the objects read and written through the API |
-| [Settings Reference](https://github.com/alireza0/s-ui/wiki/Settings-Reference) | Every panel setting and its default |
+| [Subscription Service](https://github.com/bryet/s-ui/wiki/Subscription-Service) | Subscription URLs, the three formats, response headers |
+| [Subscription JSON Template](https://github.com/bryet/s-ui/wiki/Subscription-JSON-Template) | Structure and supported keys of the sing-box subscription template |
+| [Subscription Clash Template](https://github.com/bryet/s-ui/wiki/Subscription-Clash-Template) | The Clash.Meta template, proxy groups and filters |
+| [API Documentation](https://github.com/bryet/s-ui/wiki/API-Documentation) | The token-authenticated REST API (`/apiv2`) |
+| [Configuration Objects](https://github.com/bryet/s-ui/wiki/Configuration-Objects) | Shape of the objects read and written through the API |
+| [Settings Reference](https://github.com/bryet/s-ui/wiki/Settings-Reference) | Every panel setting and its default |
 
 ## Default Installation Information
 - Panel Port: 2095
@@ -90,7 +90,7 @@ Full documentation lives in the [Wiki](https://github.com/alireza0/s-ui/wiki):
 
 ### Linux/macOS
 ```sh
-bash <(curl -Ls https://raw.githubusercontent.com/alireza0/s-ui/master/install.sh)
+bash <(curl -Ls https://raw.githubusercontent.com/bryet/s-ui/main/install.sh)
 ```
 
 #### Installer language
@@ -98,7 +98,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/alireza0/s-ui/master/install.s
 The installer is available in the same six languages as the panel: `en` (default), `fa`, `ru`, `vi`, `zhcn`, `zhtw`. Choose one with the `SUI_LANG` environment variable (when unset, your system `$LANG` is used as a hint):
 
 ```sh
-SUI_LANG=fa bash <(curl -Ls https://raw.githubusercontent.com/alireza0/s-ui/master/install.sh)
+SUI_LANG=fa bash <(curl -Ls https://raw.githubusercontent.com/bryet/s-ui/main/install.sh)
 ```
 
 ### Alpine Linux
@@ -106,13 +106,13 @@ Alpine uses `apk` and OpenRC instead of `apt`/systemd. The install script detect
 
 ```sh
 apk add bash
-bash <(curl -Ls https://raw.githubusercontent.com/alireza0/s-ui/master/install.sh)
+bash <(curl -Ls https://raw.githubusercontent.com/bryet/s-ui/main/install.sh)
 ```
 
 Manage the service with OpenRC: `rc-service s-ui start|stop|restart` and `rc-update add s-ui default`.
 
 ### Windows
-1. Download the latest Windows release from [GitHub Releases](https://github.com/alireza0/s-ui/releases/latest)
+1. Download the latest Windows release from [GitHub Releases](https://github.com/bryet/s-ui/releases/latest)
 2. Extract the ZIP file
 3. Run `install-windows.bat` as Administrator
 4. Follow the installation wizard
@@ -122,14 +122,14 @@ Manage the service with OpenRC: `rc-service s-ui start|stop|restart` and `rc-upd
 **Step 1:** To install your desired legacy version, add the version to the end of the installation command. e.g., ver `v1.5.0`:
 
 ```sh
-VERSION=v1.5.0 && bash <(curl -Ls https://raw.githubusercontent.com/alireza0/s-ui/$VERSION/install.sh) $VERSION
+VERSION=v1.5.0 && bash <(curl -Ls https://raw.githubusercontent.com/bryet/s-ui/$VERSION/install.sh) $VERSION
 ```
 
 ## Manual installation
 
 ### Linux/macOS
-1. Get the latest version of S-UI based on your OS/Architecture from GitHub: [https://github.com/alireza0/s-ui/releases/latest](https://github.com/alireza0/s-ui/releases/latest)
-2. **OPTIONAL** Get the latest version of `s-ui.sh` [https://raw.githubusercontent.com/alireza0/s-ui/master/s-ui.sh](https://raw.githubusercontent.com/alireza0/s-ui/master/s-ui.sh)
+1. Get the latest version of S-UI based on your OS/Architecture from GitHub: [https://github.com/bryet/s-ui/releases/latest](https://github.com/bryet/s-ui/releases/latest)
+2. **OPTIONAL** Get the latest version of `s-ui.sh` [https://raw.githubusercontent.com/bryet/s-ui/master/s-ui.sh](https://raw.githubusercontent.com/bryet/s-ui/master/s-ui.sh)
 3. **OPTIONAL** Copy `s-ui.sh` to /usr/bin/ and run `chmod +x /usr/bin/s-ui`.
 4. Extract s-ui tar.gz file to a directory of your choice and navigate to the directory where you extracted the tar.gz file.
 5. Copy *.service files to /etc/systemd/system/ and run `systemctl daemon-reload`.
@@ -137,7 +137,7 @@ VERSION=v1.5.0 && bash <(curl -Ls https://raw.githubusercontent.com/alireza0/s-u
 7. Start sing-box service using `systemctl enable sing-box --now`
 
 ### Windows
-1. Get the latest Windows version from GitHub: [https://github.com/alireza0/s-ui/releases/latest](https://github.com/alireza0/s-ui/releases/latest)
+1. Get the latest Windows version from GitHub: [https://github.com/bryet/s-ui/releases/latest](https://github.com/bryet/s-ui/releases/latest)
 2. Download the appropriate Windows package (e.g., `s-ui-windows-amd64.zip`)
 3. Extract the ZIP file to a directory of your choice
 4. Run `install-windows.bat` as Administrator
@@ -188,7 +188,7 @@ curl -fsSL https://get.docker.com | sh
 
 ```shell
 mkdir s-ui && cd s-ui
-wget -q https://raw.githubusercontent.com/alireza0/s-ui/master/docker-compose.yml
+wget -q https://raw.githubusercontent.com/bryet/s-ui/master/docker-compose.yml
 docker compose up -d
 ```
 
@@ -207,7 +207,7 @@ docker run -itd \
 > Build your own image
 
 ```shell
-git clone https://github.com/alireza0/s-ui
+git clone https://github.com/bryet/s-ui
 git submodule update --init --recursive
 docker build -t s-ui .
 ```
@@ -227,7 +227,7 @@ docker build -t s-ui .
 ### Clone the repository
 ```shell
 # clone repository
-git clone https://github.com/alireza0/s-ui
+git clone https://github.com/bryet/s-ui
 # clone submodules
 git submodule update --init --recursive
 ```
@@ -235,7 +235,7 @@ git submodule update --init --recursive
 
 ### - Frontend
 
-Visit [s-ui-frontend](https://github.com/alireza0/s-ui-frontend) for frontend code
+Visit [s-ui-frontend](https://github.com/bryet/s-ui-frontend) for frontend code
 
 ### - Backend
 > Please build frontend once before!
@@ -328,10 +328,10 @@ Community-made projects built around S-UI. These are not affiliated with or main
 
 ## Star History
 
-<a href="https://www.star-history.com/?repos=alireza0%2Fs-ui&type=date&releases=&legend=bottom-right">
+<a href="https://www.star-history.com/?repos=bryet%2Fs-ui&type=date&releases=&legend=bottom-right">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=alireza0/s-ui&type=date&theme=dark&legend=bottom-right" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=alireza0/s-ui&type=date&legend=bottom-right" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=alireza0/s-ui&type=date&legend=bottom-right" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=bryet/s-ui&type=date&theme=dark&legend=bottom-right" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=bryet/s-ui&type=date&legend=bottom-right" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=bryet/s-ui&type=date&legend=bottom-right" />
  </picture>
 </a>
