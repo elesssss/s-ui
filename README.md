@@ -65,9 +65,9 @@
 
 ## 界面截图
 
-![主界面](https://github.com/bryet/s-ui-frontend/raw/main/media/main.png)
+![主界面](https://github.com/alireza0/s-ui-frontend/raw/main/media/main.png)
 
-[查看其他界面截图](https://github.com/bryet/s-ui-frontend/blob/main/screenshots.md)
+[查看其他界面截图](https://github.com/alireza0/s-ui-frontend/blob/main/screenshots.md)
 
 ## 文档
 
