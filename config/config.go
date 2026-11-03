@@ -25,7 +25,7 @@ const (
 )
 
 func GetVersion() string {
-	return strings.TrimSpace(version)
+	return strings.TrimPrefix(strings.TrimSpace(version), "v")
 }
 
 func GetName() string {

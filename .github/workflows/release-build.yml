@@ -202,7 +202,8 @@ jobs:
         run: |
           set -euo pipefail
           test -s web/html/index.html
-          printf '%s\n' "$RELEASE_VERSION" > config/version
+          # The frontend adds v when displaying the panel version.
+          printf '%s\n' "${RELEASE_VERSION#v}" > config/version
           . ./build-tags.sh
           if [ "$BUILD_NAIVE" = true ]; then
             PROFILE=release
@@ -265,7 +266,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.build-frontend.outputs.version }}
-          name: Release ${{ needs.build-frontend.outputs.version }}
+          name: ${{ needs.build-frontend.outputs.version }}
           target_commitish: ${{ github.sha }}
           generate_release_notes: true
           fail_on_unmatched_files: true
