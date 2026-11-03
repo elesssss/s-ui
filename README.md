@@ -1,0 +1,337 @@
+# S-UI
+
+### L2TP/IPsec in this checkout
+
+This checkout adds the L2TP adapter from [wanan9999/s-ui](https://github.com/wanan9999/s-ui), using the pinned [wanan9999/veepin](https://github.com/wanan9999/veepin) library. It retains the upstream frontend theme and layout.
+
+1. Build on Linux using the existing build profiles, which include gVisor. Add an inbound of type **L2TP/IPsec**.
+2. Set the server public IPv4 and IPsec pre-shared key. Defaults are `0.0.0.0:500` and client pool `10.20.0.0/24`; the pool must be a private IPv4 `/16` through `/29` subnet.
+3. In **Clients**, set the user's L2TP password and associate the user with this inbound. Existing users need their user form saved once to add L2TP credentials. Disabling the L2TP inbound, or having no enabled users with L2TP credentials, stops it from listening.
+4. Allow UDP **500** and **4500**. Public UDP 1701 is not needed. The server does not require strongSwan, xl2tpd, pppd, `/dev/net/tun`, host NAT or forwarding rules.
+5. Configure the OS/router VPN client manually with the public IPv4, PSK, user name and password. L2TP is excluded from sing-box and Clash subscriptions.
+
+Each authenticated session forwards IPv4 TCP/UDP through sing-box with the user's identity, so existing traffic limits and `auth_user` routing rules apply. ICMP and IPv6 forwarding are not supported. Configure clients to block traffic outside the tunnel, including IPv6.
+
+To use the panel's DNS configuration, configure DNS servers and place a `hijack-dns` rule for destination port 53 before general route rules. An empty DNS server list still allows sing-box's implicit system DNS; DNS hijacking does not control tunnel-external traffic or client DoH.
+
+DNS, route/rule-set, HTTP client and outbound configuration saves use policy hot reload. In supported configurations, they keep the L2TP listener, IKE/IPsec/PPP session and gVisor device alive. DNS-only changes keep ordinary TCP/UDP connections; existing DNS channels use the new policy on their next query. Route/HTTP client changes close business connections, and outbound changes close connections using the affected dependency chain; clients can establish new connections without redialling the VPN.
+
+Policy preparation happens before the database commit, and publication happens afterwards. Preparation or storage failure returns an error and keeps the old policy running. Saves wait for in-flight lifecycle operations. Hot reload currently rejects TUN, endpoints/core services, certificate providers/core APIs, enabled NTP and persistent core cache. Changes to other global settings (including logging, certificates and namespaces) require stopping the core first. In maintenance mode, saves validate and persist configuration without starting the core.
+
+Account changes still rebuild the affected inbound and disconnect its sessions. Listener failures are detected by the existing core watchdog; maintenance mode prevents automatic recovery. The server adapter is supported on Linux; other upstream platforms retain their existing protocols.
+
+The package includes tests for session identity, TCP/UDP forwarding, negotiated MTU, logs, scope cleanup and credential selection. The Test workflow also runs policy failure/ownership regressions and the full PPP/IPsec pipeline in an isolated Linux network namespace, including DNS and routing changes over the same dial-up session. These test definitions do not imply they have already passed on this checkout. Real Windows/router client compatibility and long-running rekey sessions require separate acceptance testing.
+**An Advanced Web Panel • Built on SagerNet/Sing-Box**
+
+![](https://img.shields.io/github/v/release/alireza0/s-ui.svg)
+![S-UI Docker pull](https://img.shields.io/docker/pulls/alireza7/s-ui.svg)
+[![Go Report Card](https://goreportcard.com/badge/github.com/alireza0/s-ui)](https://goreportcard.com/report/github.com/alireza0/s-ui)
+[![Downloads](https://img.shields.io/github/downloads/alireza0/s-ui/total.svg)](https://img.shields.io/github/downloads/alireza0/s-ui/total.svg)
+[![License](https://img.shields.io/badge/license-GPL%20V3-blue.svg?longCache=true)](https://www.gnu.org/licenses/gpl-3.0.en.html)
+
+> **Disclaimer:** This project is only for personal learning and communication, please do not use it for illegal purposes, please do not use it in a production environment
+
+**If you think this project is helpful to you, you may wish to give a**:star2:
+
+**Want to contribute?** See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, coding conventions, testing, and the pull request process.
+
+[!["Buy Me A Coffee"](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)](https://www.buymeacoffee.com/alireza7)
+
+<a href="https://nowpayments.io/donation/alireza7" target="_blank" rel="noreferrer noopener">
+   <img src="https://nowpayments.io/images/embeds/donation-button-white.svg" alt="Crypto donation button by NOWPayments">
+</a>
+
+## Quick Overview
+| Features                               |      Enable?       |
+| -------------------------------------- | :----------------: |
+| Multi-Protocol                         | :heavy_check_mark: |
+| Multi-Language                         | :heavy_check_mark: |
+| Multi-Client/Inbound                   | :heavy_check_mark: |
+| Advanced Traffic Routing Interface     | :heavy_check_mark: |
+| Client & Traffic & System Status       | :heavy_check_mark: |
+| Subscription Link (link/json/clash + info)| :heavy_check_mark: |
+| Dark/Light Theme                       | :heavy_check_mark: |
+| API Interface                          | :heavy_check_mark: |
+
+## Supported Platforms
+| Platform | Architecture | Status |
+|----------|--------------|---------|
+| Linux    | amd64, arm64, armv7, armv6, armv5, 386, s390x | ✅ Supported |
+| Windows  | amd64, 386, arm64 | ✅ Supported |
+| macOS    | amd64, arm64 | 🚧 Experimental |
+
+## Screenshots
+
+!["Main"](https://github.com/alireza0/s-ui-frontend/raw/main/media/main.png)
+
+[Other UI Screenshots](https://github.com/alireza0/s-ui-frontend/blob/main/screenshots.md)
+
+## Documentation
+
+Full documentation lives in the [Wiki](https://github.com/alireza0/s-ui/wiki):
+
+| Page | Contents |
+|------|----------|
+| [Subscription Service](https://github.com/alireza0/s-ui/wiki/Subscription-Service) | Subscription URLs, the three formats, response headers |
+| [Subscription JSON Template](https://github.com/alireza0/s-ui/wiki/Subscription-JSON-Template) | Structure and supported keys of the sing-box subscription template |
+| [Subscription Clash Template](https://github.com/alireza0/s-ui/wiki/Subscription-Clash-Template) | The Clash.Meta template, proxy groups and filters |
+| [API Documentation](https://github.com/alireza0/s-ui/wiki/API-Documentation) | The token-authenticated REST API (`/apiv2`) |
+| [Configuration Objects](https://github.com/alireza0/s-ui/wiki/Configuration-Objects) | Shape of the objects read and written through the API |
+| [Settings Reference](https://github.com/alireza0/s-ui/wiki/Settings-Reference) | Every panel setting and its default |
+
+## Default Installation Information
+- Panel Port: 2095
+- Panel Path: /app/
+- Subscription Port: 2096
+- Subscription Path: /sub/
+- User/Password: admin
+
+## Install & Upgrade to Latest Version
+
+### Linux/macOS
+```sh
+bash <(curl -Ls https://raw.githubusercontent.com/alireza0/s-ui/master/install.sh)
+```
+
+#### Installer language
+
+The installer is available in the same six languages as the panel: `en` (default), `fa`, `ru`, `vi`, `zhcn`, `zhtw`. Choose one with the `SUI_LANG` environment variable (when unset, your system `$LANG` is used as a hint):
+
+```sh
+SUI_LANG=fa bash <(curl -Ls https://raw.githubusercontent.com/alireza0/s-ui/master/install.sh)
+```
+
+### Alpine Linux
+Alpine uses `apk` and OpenRC instead of `apt`/systemd. The install script detects Alpine automatically and sets up an OpenRC service. Since Alpine has no `bash` by default, install it first:
+
+```sh
+apk add bash
+bash <(curl -Ls https://raw.githubusercontent.com/alireza0/s-ui/master/install.sh)
+```
+
+Manage the service with OpenRC: `rc-service s-ui start|stop|restart` and `rc-update add s-ui default`.
+
+### Windows
+1. Download the latest Windows release from [GitHub Releases](https://github.com/alireza0/s-ui/releases/latest)
+2. Extract the ZIP file
+3. Run `install-windows.bat` as Administrator
+4. Follow the installation wizard
+
+## Install legacy Version
+
+**Step 1:** To install your desired legacy version, add the version to the end of the installation command. e.g., ver `v1.5.0`:
+
+```sh
+VERSION=v1.5.0 && bash <(curl -Ls https://raw.githubusercontent.com/alireza0/s-ui/$VERSION/install.sh) $VERSION
+```
+
+## Manual installation
+
+### Linux/macOS
+1. Get the latest version of S-UI based on your OS/Architecture from GitHub: [https://github.com/alireza0/s-ui/releases/latest](https://github.com/alireza0/s-ui/releases/latest)
+2. **OPTIONAL** Get the latest version of `s-ui.sh` [https://raw.githubusercontent.com/alireza0/s-ui/master/s-ui.sh](https://raw.githubusercontent.com/alireza0/s-ui/master/s-ui.sh)
+3. **OPTIONAL** Copy `s-ui.sh` to /usr/bin/ and run `chmod +x /usr/bin/s-ui`.
+4. Extract s-ui tar.gz file to a directory of your choice and navigate to the directory where you extracted the tar.gz file.
+5. Copy *.service files to /etc/systemd/system/ and run `systemctl daemon-reload`.
+6. Enable autostart and start S-UI service using `systemctl enable s-ui --now`
+7. Start sing-box service using `systemctl enable sing-box --now`
+
+### Windows
+1. Get the latest Windows version from GitHub: [https://github.com/alireza0/s-ui/releases/latest](https://github.com/alireza0/s-ui/releases/latest)
+2. Download the appropriate Windows package (e.g., `s-ui-windows-amd64.zip`)
+3. Extract the ZIP file to a directory of your choice
+4. Run `install-windows.bat` as Administrator
+5. Follow the installation wizard
+6. Access the panel at http://localhost:2095/app
+
+## Uninstall S-UI
+
+### systemd
+```sh
+sudo -i
+
+systemctl disable s-ui  --now
+
+rm -f /etc/systemd/system/sing-box.service
+systemctl daemon-reload
+
+rm -fr /usr/local/s-ui
+rm /usr/bin/s-ui
+```
+
+### Alpine (OpenRC)
+```sh
+rc-service s-ui stop
+rc-update del s-ui default
+rm -f /etc/init.d/s-ui
+
+rm -fr /usr/local/s-ui
+rm /usr/bin/s-ui
+```
+
+## Install using Docker
+
+<details>
+   <summary>Click for details</summary>
+
+### Usage
+
+**Step 1:** Install Docker
+
+```shell
+curl -fsSL https://get.docker.com | sh
+```
+
+**Step 2:** Install S-UI
+
+> Docker compose method
+
+```shell
+mkdir s-ui && cd s-ui
+wget -q https://raw.githubusercontent.com/alireza0/s-ui/master/docker-compose.yml
+docker compose up -d
+```
+
+> Use docker
+
+```shell
+mkdir s-ui && cd s-ui
+docker run -itd \
+    -p 2095:2095 -p 2096:2096 -p 443:443 -p 80:80 \
+    -v $PWD/db/:/app/db/ \
+    -v $PWD/cert/:/root/cert/ \
+    --name s-ui --restart=unless-stopped \
+    alireza7/s-ui:latest
+```
+
+> Build your own image
+
+```shell
+git clone https://github.com/alireza0/s-ui
+git submodule update --init --recursive
+docker build -t s-ui .
+```
+
+</details>
+
+## Manual run ( contribution )
+
+<details>
+   <summary>Click for details</summary>
+
+### Build and run whole project
+```shell
+./runSUI.sh
+```
+
+### Clone the repository
+```shell
+# clone repository
+git clone https://github.com/alireza0/s-ui
+# clone submodules
+git submodule update --init --recursive
+```
+
+
+### - Frontend
+
+Visit [s-ui-frontend](https://github.com/alireza0/s-ui-frontend) for frontend code
+
+### - Backend
+> Please build frontend once before!
+
+To build backend:
+```shell
+# remove old frontend compiled files
+rm -fr web/html/*
+# apply new frontend compiled files
+cp -R frontend/dist/ web/html/
+# build
+go build -o sui main.go
+```
+
+To run backend (from root folder of repository):
+```shell
+./sui
+```
+
+</details>
+
+## Languages
+
+- English
+- Farsi
+- Vietnamese
+- Chinese (Simplified)
+- Chinese (Traditional)
+- Russian
+
+## Features
+
+- Supported protocols:
+  - General:  Mixed, SOCKS, HTTP, HTTPS, Direct, Redirect, TProxy
+  - V2Ray based: VLESS, VMess, Trojan, Shadowsocks
+  - Other protocols: ShadowTLS, Hysteria, Hysteria2, Naive, TUIC
+- Supports XTLS protocols
+- An advanced interface for routing traffic, incorporating PROXY Protocol, External, and Transparent Proxy, SSL Certificate, and Port
+- An advanced interface for inbound and outbound configuration
+- Clients’ traffic cap and expiration date
+- Displays online clients, inbounds and outbounds with traffic statistics, and system status monitoring
+- Subscription service with ability to add external links and subscription
+- HTTPS for secure access to the web panel and subscription service (self-provided domain + SSL certificate)
+- Dark/Light theme
+
+## Environment Variables
+
+<details>
+  <summary>Click for details</summary>
+
+### Usage
+
+| Variable       |                      Type                      | Default       |
+| -------------- | :--------------------------------------------: | :------------ |
+| SUI_LOG_LEVEL  | `"debug"` \| `"info"` \| `"warn"` \| `"error"` | `"info"`      |
+| SUI_DEBUG      |                   `boolean`                    | `false`       |
+| SUI_BIN_FOLDER |                    `string`                    | `"bin"`       |
+| SUI_DB_FOLDER  |                    `string`                    | `"db"`        |
+| SINGBOX_API    |                    `string`                    | -             |
+
+</details>
+
+## SSL Certificate
+
+<details>
+  <summary>Click for details</summary>
+
+### Certbot
+
+```bash
+snap install core; snap refresh core
+snap install --classic certbot
+ln -s /snap/bin/certbot /usr/bin/certbot
+
+certbot certonly --standalone --register-unsafely-without-email --non-interactive --agree-tos -d <Your Domain Name>
+```
+
+</details>
+
+## Third-party Projects
+
+Community-made projects built around S-UI. These are not affiliated with or maintained by S-UI — use them at your own discretion:
+
+- [itning/reset-s-ui-traffic](https://github.com/itning/reset-s-ui-traffic) — periodic traffic reset for all users
+- [zqh2333/s-ui-traffic-reset](https://github.com/zqh2333/s-ui-traffic-reset) — traffic reset tool
+- [Sownix21/SUI-Bot](https://github.com/Sownix21/SUI-Bot) - telegram bot
+- [Android App](https://github.com/Sownix21/SUI-Node) - multi panel controller
+
+> Building something on top of S-UI (a Telegram bot, monitoring, automation, ...)? Open an issue/PR to get it listed here.
+
+## Star History
+
+<a href="https://www.star-history.com/?repos=alireza0%2Fs-ui&type=date&releases=&legend=bottom-right">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=alireza0/s-ui&type=date&theme=dark&legend=bottom-right" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=alireza0/s-ui&type=date&legend=bottom-right" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=alireza0/s-ui&type=date&legend=bottom-right" />
+ </picture>
+</a>

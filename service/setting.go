@@ -1,0 +1,594 @@
+package service
+
+import (
+	"encoding/json"
+	"os"
+	"runtime"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/alireza0/s-ui/config"
+	"github.com/alireza0/s-ui/database"
+	"github.com/alireza0/s-ui/database/model"
+	"github.com/alireza0/s-ui/logger"
+	"github.com/alireza0/s-ui/util/common"
+
+	"github.com/robfig/cron/v3"
+	"gorm.io/gorm"
+)
+
+// CronParser accepts standard 5-field cron, optional leading seconds (6-field)
+// and descriptors (@daily, @weekly, @every 10s, ...). Used both for the cron
+// engine and for parsing the user-provided globalReset spec.
+var CronParser = cron.NewParser(
+	cron.SecondOptional | cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow | cron.Descriptor,
+)
+
+var defaultConfig = `{
+  "log": {
+    "level": "info"
+  },
+  "dns": {
+    "servers": [],
+    "rules": []
+  },
+  "route": {
+    "rules": [
+		  {
+        "action": "sniff"
+      },
+      {
+        "protocol": [
+          "dns"
+        ],
+        "action": "hijack-dns"
+      }
+    ]
+  },
+  "experimental": {}
+}`
+
+// protectedSettings never travel over the settings endpoint, in either
+// direction. They were already stripped from GetAllSetting, but Save accepted
+// whatever keys it was posted: a client could set its own session `secret`,
+// logging every other session out, or replace the whole sing-box base `config`
+// through a form that is not supposed to touch it.
+//
+// maintenance is here for a different reason -- it has an action of its own
+// that stops or starts the core alongside writing the flag, and letting it
+// through here would leave the two disagreeing.
+var protectedSettings = map[string]bool{
+	"secret":          true,
+	"config":          true,
+	"version":         true,
+	"globalResetLast": true,
+	"maintenance":     true,
+}
+
+var defaultValueMap = map[string]string{
+	"webListen":          "",
+	"webDomain":          "",
+	"webPort":            "2095",
+	"secret":             common.Random(32),
+	"webCertFile":        "",
+	"webKeyFile":         "",
+	"webPath":            "/app/",
+	"webURI":             "",
+	"sessionMaxAge":      "0",
+	"trafficAge":         "30",
+	"statsBucketSeconds": "60",
+	"timeLocation":       "Asia/Tehran",
+	"subListen":          "",
+	"subPort":            "2096",
+	"subPath":            "/sub/",
+	"subDomain":          "",
+	"subCertFile":        "",
+	"subKeyFile":         "",
+	"subUpdates":         "12",
+	"subEncode":          "true",
+	"subShowInfo":        "false",
+	"subRemarkPrefix":    "true",
+	"subURI":             "",
+	"subJsonExt":         "",
+	"subClashExt":        "",
+	"subCustomHeaders":   "",
+	"subClashNoDefGrp":   "false",
+	"subClashSprtAll":    "false",
+	"subClashUdp":        "false",
+	"maintenance":        "false",
+	"globalReset":        "",
+	"globalResetLast":    "0",
+	"config":             defaultConfig,
+	"version":            config.GetVersion(),
+}
+
+type SettingService struct {
+}
+
+func (s *SettingService) GetAllSetting() (*map[string]string, error) {
+	db := database.GetDB()
+	settings := make([]*model.Setting, 0)
+	err := db.Model(model.Setting{}).Find(&settings).Error
+	if err != nil {
+		return nil, err
+	}
+	allSetting := map[string]string{}
+
+	for _, setting := range settings {
+		allSetting[setting.Key] = setting.Value
+	}
+
+	for key, defaultValue := range defaultValueMap {
+		if _, exists := allSetting[key]; !exists {
+			err = s.saveSetting(key, defaultValue)
+			if err != nil {
+				return nil, err
+			}
+			allSetting[key] = defaultValue
+		}
+	}
+
+	// Bookkeeping rows share this table with the operator's settings: the
+	// migrated* flags the one-off data migrations write, and whatever a later
+	// migration adds. They used to be handed to the settings form, which posts
+	// back every key it was given, and Save rejects a key that is not a
+	// setting -- so a single migration flag made every settings save fail with
+	// "unknown setting". Only keys the operator can actually set leave here.
+	for key := range allSetting {
+		if _, known := defaultValueMap[key]; !known {
+			delete(allSetting, key)
+		}
+	}
+
+	for key := range protectedSettings {
+		delete(allSetting, key)
+	}
+
+	return &allSetting, nil
+}
+
+func (s *SettingService) ResetSettings() error {
+	db := database.GetDB()
+	return db.Where("key <> ?", "version").Delete(model.Setting{}).Error
+}
+
+func (s *SettingService) getSetting(key string) (*model.Setting, error) {
+	db := database.GetDB()
+	setting := &model.Setting{}
+	err := db.Model(model.Setting{}).Where("key = ?", key).First(setting).Error
+	if err != nil {
+		return nil, err
+	}
+	return setting, nil
+}
+
+func (s *SettingService) getString(key string) (string, error) {
+	setting, err := s.getSetting(key)
+	if database.IsNotFound(err) {
+		value, ok := defaultValueMap[key]
+		if !ok {
+			return "", common.NewErrorf("key <%v> not in defaultValueMap", key)
+		}
+		return value, nil
+	} else if err != nil {
+		return "", err
+	}
+	return setting.Value, nil
+}
+
+func (s *SettingService) saveSetting(key string, value string) error {
+	setting, err := s.getSetting(key)
+	db := database.GetDB()
+	if database.IsNotFound(err) {
+		return db.Create(&model.Setting{
+			Key:   key,
+			Value: value,
+		}).Error
+	} else if err != nil {
+		return err
+	}
+	setting.Key = key
+	setting.Value = value
+	return db.Save(setting).Error
+}
+
+func (s *SettingService) setString(key string, value string) error {
+	return s.saveSetting(key, value)
+}
+
+func (s *SettingService) getBool(key string) (bool, error) {
+	str, err := s.getString(key)
+	if err != nil {
+		return false, err
+	}
+	return strconv.ParseBool(str)
+}
+
+// func (s *SettingService) setBool(key string, value bool) error {
+// 	return s.setString(key, strconv.FormatBool(value))
+// }
+
+func (s *SettingService) getInt(key string) (int, error) {
+	str, err := s.getString(key)
+	if err != nil {
+		return 0, err
+	}
+	return strconv.Atoi(str)
+}
+
+func (s *SettingService) setInt(key string, value int) error {
+	return s.setString(key, strconv.Itoa(value))
+}
+func (s *SettingService) GetListen() (string, error) {
+	return s.getString("webListen")
+}
+
+func (s *SettingService) GetWebDomain() (string, error) {
+	return s.getString("webDomain")
+}
+
+func (s *SettingService) GetPort() (int, error) {
+	return s.getInt("webPort")
+}
+
+func (s *SettingService) SetPort(port int) error {
+	return s.setInt("webPort", port)
+}
+
+func (s *SettingService) GetCertFile() (string, error) {
+	return s.getString("webCertFile")
+}
+
+func (s *SettingService) GetKeyFile() (string, error) {
+	return s.getString("webKeyFile")
+}
+
+func (s *SettingService) GetWebPath() (string, error) {
+	webPath, err := s.getString("webPath")
+	if err != nil {
+		return "", err
+	}
+	if !strings.HasPrefix(webPath, "/") {
+		webPath = "/" + webPath
+	}
+	if !strings.HasSuffix(webPath, "/") {
+		webPath += "/"
+	}
+	return webPath, nil
+}
+
+func (s *SettingService) SetWebPath(webPath string) error {
+	if !strings.HasPrefix(webPath, "/") {
+		webPath = "/" + webPath
+	}
+	if !strings.HasSuffix(webPath, "/") {
+		webPath += "/"
+	}
+	return s.setString("webPath", webPath)
+}
+
+func (s *SettingService) GetSecret() ([]byte, error) {
+	secret, err := s.getString("secret")
+	if secret == defaultValueMap["secret"] {
+		err := s.saveSetting("secret", secret)
+		if err != nil {
+			logger.Warning("save secret failed:", err)
+		}
+	}
+	return []byte(secret), err
+}
+
+func (s *SettingService) GetSessionMaxAge() (int, error) {
+	return s.getInt("sessionMaxAge")
+}
+
+func (s *SettingService) GetTrafficAge() (int, error) {
+	return s.getInt("trafficAge")
+}
+
+// GetStatsBucketSeconds returns the bucket size (in seconds) that traffic
+// samples are rounded down to before being stored. Larger buckets mean fewer
+// rows at the cost of chart resolution. Falls back to the default on a missing
+// or non-positive value.
+func (s *SettingService) GetStatsBucketSeconds() (int64, error) {
+	v, err := s.getInt("statsBucketSeconds")
+	if err != nil {
+		return 0, err
+	}
+	if v < 1 {
+		def, _ := strconv.Atoi(defaultValueMap["statsBucketSeconds"])
+		return int64(def), nil
+	}
+	return int64(v), nil
+}
+
+func (s *SettingService) GetTimeLocation() (*time.Location, error) {
+	l, err := s.getString("timeLocation")
+	if err != nil {
+		return nil, err
+	}
+	if runtime.GOOS == "windows" {
+		l = "Local"
+	}
+	location, err := time.LoadLocation(l)
+	if err != nil {
+		defaultLocation := defaultValueMap["timeLocation"]
+		logger.Errorf("location <%v> not exist, using default location: %v", l, defaultLocation)
+		return time.LoadLocation(defaultLocation)
+	}
+	return location, nil
+}
+
+func (s *SettingService) GetSubListen() (string, error) {
+	return s.getString("subListen")
+}
+
+func (s *SettingService) GetSubPort() (int, error) {
+	return s.getInt("subPort")
+}
+
+func (s *SettingService) SetSubPort(subPort int) error {
+	return s.setInt("subPort", subPort)
+}
+
+func (s *SettingService) GetSubPath() (string, error) {
+	subPath, err := s.getString("subPath")
+	if err != nil {
+		return "", err
+	}
+	if !strings.HasPrefix(subPath, "/") {
+		subPath = "/" + subPath
+	}
+	if !strings.HasSuffix(subPath, "/") {
+		subPath += "/"
+	}
+	return subPath, nil
+}
+
+func (s *SettingService) SetSubPath(subPath string) error {
+	if !strings.HasPrefix(subPath, "/") {
+		subPath = "/" + subPath
+	}
+	if !strings.HasSuffix(subPath, "/") {
+		subPath += "/"
+	}
+	return s.setString("subPath", subPath)
+}
+
+func (s *SettingService) GetSubDomain() (string, error) {
+	return s.getString("subDomain")
+}
+
+func (s *SettingService) GetSubCertFile() (string, error) {
+	return s.getString("subCertFile")
+}
+
+func (s *SettingService) GetSubKeyFile() (string, error) {
+	return s.getString("subKeyFile")
+}
+
+func (s *SettingService) GetSubUpdates() (int, error) {
+	return s.getInt("subUpdates")
+}
+
+func (s *SettingService) GetSubEncode() (bool, error) {
+	return s.getBool("subEncode")
+}
+
+func (s *SettingService) SubRemarkPrefix(db *gorm.DB) bool {
+	setting := &model.Setting{}
+	value := defaultValueMap["subRemarkPrefix"]
+	if err := db.Model(model.Setting{}).Where("key = ?", "subRemarkPrefix").First(setting).Error; err == nil {
+		value = setting.Value
+	}
+	enabled, err := strconv.ParseBool(value)
+	return err != nil || enabled
+}
+
+func (s *SettingService) GetSubShowInfo() (bool, error) {
+	return s.getBool("subShowInfo")
+}
+
+func (s *SettingService) GetSubURI() (string, error) {
+	return s.getString("subURI")
+}
+
+// GetGlobalReset returns the cron spec for resetting all clients' traffic;
+// empty or "off" means disabled.
+func (s *SettingService) GetGlobalReset() (string, error) {
+	return s.getString("globalReset")
+}
+
+// GetGlobalResetLast returns the unix time of the next armed global traffic
+// reset (despite the name), or 0 when no boundary is armed yet.
+func (s *SettingService) GetGlobalResetLast() (int64, error) {
+	str, err := s.getString("globalResetLast")
+	if err != nil {
+		return 0, err
+	}
+	return strconv.ParseInt(str, 10, 64)
+}
+
+func (s *SettingService) SetGlobalResetLast(value int64) error {
+	return s.setString("globalResetLast", strconv.FormatInt(value, 10))
+}
+
+func (s *SettingService) GetFinalSubURI(host string) (string, error) {
+	allSetting, err := s.GetAllSetting()
+	if err != nil {
+		return "", err
+	}
+	SubURI := (*allSetting)["subURI"]
+	if SubURI != "" {
+		return SubURI, nil
+	}
+	protocol := "http"
+	if (*allSetting)["subKeyFile"] != "" && (*allSetting)["subCertFile"] != "" {
+		protocol = "https"
+	}
+	if (*allSetting)["subDomain"] != "" {
+		host = (*allSetting)["subDomain"]
+	}
+	port := ":" + (*allSetting)["subPort"]
+	if (port == "80" && protocol == "http") || (port == "443" && protocol == "https") {
+		port = ""
+	}
+	return protocol + "://" + host + port + (*allSetting)["subPath"], nil
+}
+
+func (s *SettingService) GetConfig() (string, error) {
+	return s.getString("config")
+}
+
+func (s *SettingService) SetConfig(config string) error {
+	return s.setString("config", config)
+}
+
+func (s *SettingService) SaveConfig(tx *gorm.DB, config json.RawMessage) error {
+	configs, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		return err
+	}
+	return tx.Model(model.Setting{}).Where("key = ?", "config").Update("value", string(configs)).Error
+}
+
+func normalizeSettingValue(value string) string {
+	return strings.TrimSpace(value)
+}
+
+func (s *SettingService) Save(tx *gorm.DB, data json.RawMessage) error {
+	var err error
+	var settings map[string]string
+	err = json.Unmarshal(data, &settings)
+	if err != nil {
+		return err
+	}
+	for key, obj := range settings {
+		if protectedSettings[key] {
+			continue
+		}
+		// An unknown key would UPDATE zero rows and report success. Rejecting
+		// it instead surfaces a typo in the caller rather than silently
+		// dropping the value.
+		if _, known := defaultValueMap[key]; !known {
+			return common.NewError("unknown setting: ", key)
+		}
+
+		// Ignore accidental surrounding whitespace while preserving spaces
+		// inside values such as certificate paths and URLs.
+		obj = normalizeSettingValue(obj)
+
+		// Secure file existence check
+		if obj != "" && (key == "webCertFile" ||
+			key == "webKeyFile" ||
+			key == "subCertFile" ||
+			key == "subKeyFile") {
+			err = s.fileExists(obj)
+			if err != nil {
+				return common.NewError(" -> ", obj, " is not exists")
+			}
+		}
+
+		// Correct Pathes start and ends with `/`
+		if key == "webPath" ||
+			key == "subPath" {
+			if !strings.HasPrefix(obj, "/") {
+				obj = "/" + obj
+			}
+			if !strings.HasSuffix(obj, "/") {
+				obj += "/"
+			}
+		}
+
+		// A bad spec used to be accepted here and only logged at the next
+		// panel start, so the reset silently never ran.
+		if key == "globalReset" && obj != "" && obj != "off" {
+			if _, err = CronParser.Parse(obj); err != nil {
+				return common.NewError("invalid cron spec <", obj, ">: ", err)
+			}
+		}
+		// globalResetLast holds the next boundary of the old schedule. Clear it
+		// on a change so the reset job arms the new one instead of waiting out
+		// the old period (a monthly-to-daily switch looked dead for a month).
+		if key == "globalReset" {
+			var old model.Setting
+			if tx.Where("key = ?", key).Limit(1).Find(&old).Error == nil && old.Value != obj {
+				if err = tx.Model(model.Setting{}).Where("key = ?", "globalResetLast").Update("value", "0").Error; err != nil {
+					return err
+				}
+			}
+		}
+
+		// Delete all stats if it is set to 0
+		if key == "trafficAge" && obj == "0" {
+			err = tx.Where("id > 0").Delete(model.Stats{}).Error
+			if err != nil {
+				return err
+			}
+		}
+		// Upsert. A plain UPDATE affects zero rows and reports success when the
+		// row does not exist yet, and rows are only created lazily the first
+		// time GetAllSetting runs -- so on a fresh install the settings form
+		// could report a successful save that wrote nothing.
+		res := tx.Model(model.Setting{}).Where("key = ?", key).Update("value", obj)
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			if err := tx.Create(&model.Setting{Key: key, Value: obj}).Error; err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (s *SettingService) GetSubJsonExt() (string, error) {
+	return s.getString("subJsonExt")
+}
+
+func (s *SettingService) GetSubClashExt() (string, error) {
+	return s.getString("subClashExt")
+}
+
+func (s *SettingService) GetSubCustomHeaders() (string, error) {
+	return s.getString("subCustomHeaders")
+}
+
+// GetSubClashNoDefGrp reports whether the default "Proxy"/"Auto" proxy-groups
+// should never be injected into a Clash subscription. When true, the config is
+// left with exactly the groups the user defined.
+func (s *SettingService) GetSubClashNoDefGrp() (bool, error) {
+	return s.getBool("subClashNoDefGrp")
+}
+
+// GetSubClashSprtAll reports whether a case-insensitive "all" entry inside a
+// custom proxy-group's "proxies" list should be expanded into every generated
+// proxy tag.
+func (s *SettingService) GetSubClashSprtAll() (bool, error) {
+	return s.getBool("subClashSprtAll")
+}
+
+// GetSubClashUdp reports whether generated Clash proxies should carry
+// "udp: true" by default. Mihomo disables UDP unless the proxy opts in, so
+// without it VLESS/VMess/Trojan/... nodes reach the client with UDP off.
+func (s *SettingService) GetSubClashUdp() (bool, error) {
+	return s.getBool("subClashUdp")
+}
+
+// GetMaintenance reports whether the operator has taken the core out of
+// service. It is stored rather than held in memory so a reboot in the middle of
+// maintenance does not quietly put users back online.
+func (s *SettingService) GetMaintenance() (bool, error) {
+	return s.getBool("maintenance")
+}
+
+func (s *SettingService) SetMaintenance(enabled bool) error {
+	return s.setString("maintenance", strconv.FormatBool(enabled))
+}
+
+func (s *SettingService) fileExists(path string) error {
+	_, err := os.Stat(path)
+	return err
+}

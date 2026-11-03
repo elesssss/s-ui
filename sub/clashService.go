@@ -1,0 +1,590 @@
+package sub
+
+import (
+	"regexp"
+	"strings"
+
+	"github.com/alireza0/s-ui/logger"
+	"github.com/alireza0/s-ui/service"
+	"github.com/alireza0/s-ui/util"
+
+	"gopkg.in/yaml.v3"
+)
+
+type ClashService struct {
+	service.SettingService
+	JsonService
+	LinkService
+}
+
+const basicClashConfig = `mixed-port: 7890
+allow-lan: false
+mode: rule
+log-level: info
+external-controller: 127.0.0.1:9090
+tun:
+  enable: true
+  stack: system
+  auto-route: true
+  auto-detect-interface: true
+  dns-hijack:
+    - any:53
+dns:
+  enable: true
+  ipv6: false
+  enhanced-mode: fake-ip
+  fake-ip-range: 198.18.0.1/16
+  default-nameserver:
+    - 8.8.8.8
+    - 1.1.1.1
+  nameserver:
+    - https://doh.pub/dns-query
+    - https://1.0.0.1/dns-query
+  fallback:
+    - tcp://9.9.9.9:53
+  fake-ip-filter:
+    - "*.lan"
+    - localhost
+    - "*.local"
+rules:
+  - GEOIP,Private,DIRECT
+  - MATCH,Proxy
+`
+
+const ProxyGroups = `- name: Proxy
+  type: select
+  proxies: []
+- name: Auto
+  type: url-test
+  proxies: []
+  url: http://www.gstatic.com/generate_204
+  interval: 300
+  tolerance: 50
+`
+
+// asBool reads a JSON bool without asserting. sing-box options reach here as
+// map[string]interface{} straight from the database, where a key can be absent,
+// null, or a string from an older schema -- and a bare assertion on any of
+// those panics inside the subscription handler.
+func asBool(v interface{}) bool {
+	b, _ := v.(bool)
+	return b
+}
+
+func (s *ClashService) GetClash(subId string) (*string, []string, error) {
+
+	client, inDatas, err := s.getData(subId)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	outbounds, outTags, err := s.getOutbounds(client.Config, inDatas, nodeRemark(&s.SettingService, client))
+	if err != nil {
+		return nil, nil, err
+	}
+
+	extOutbounds, extTags := s.LinkService.GetExternalOutboundsForClash(&client.Links)
+	*outbounds = append(*outbounds, extOutbounds...)
+	*outTags = append(*outTags, extTags...)
+
+	basicConfig, err := s.getClashConfig()
+	if err != nil || len(basicConfig) == 0 {
+		basicConfig = basicClashConfig
+	}
+
+	resultStr, err := s.ConvertToClashMeta(outbounds, basicConfig)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	updateInterval, _ := s.SettingService.GetSubUpdates()
+	headers := util.GetHeaders(client, updateInterval)
+
+	return &resultStr, headers, nil
+}
+
+func (s *ClashService) getClashConfig() (string, error) {
+	subClashExt, err := s.SettingService.GetSubClashExt()
+	if err != nil {
+		return "", err
+	}
+
+	return subClashExt, nil
+}
+
+func (s *ClashService) ConvertToClashMeta(outbounds *[]map[string]interface{}, basicConfig string) (string, error) {
+	var proxies []interface{}
+	proxyTags := make([]string, 0)
+	defaultUdp, _ := s.SettingService.GetSubClashUdp()
+	for _, obMap := range *outbounds {
+
+		t, _ := obMap["type"].(string)
+		if t == "selector" || t == "urltest" || t == "direct" {
+			continue
+		}
+		// Clash has no hysteria realm, and without it there is no address to
+		// reach the server at.
+		if _, viaRealm := obMap["realm"]; viaRealm {
+			continue
+		}
+
+		proxy := make(map[string]interface{})
+		proxy["name"] = obMap["tag"]
+		proxy["type"] = t
+
+		server, _ := obMap["server"].(string)
+		proxy["server"] = util.NormalizeHost(server)
+
+		proxy["port"] = obMap["server_port"]
+
+		switch t {
+		case "vmess", "vless", "tuic":
+			proxy["uuid"] = obMap["uuid"]
+			if t == "vmess" {
+				if alterId, ok := obMap["alter_id"].(float64); ok {
+					proxy["alterId"] = int(alterId)
+				} else {
+					proxy["alterId"] = 0
+				}
+				proxy["cipher"] = "auto"
+			}
+			if t == "vless" {
+				if flow, ok := obMap["flow"].(string); ok {
+					proxy["flow"] = flow
+				}
+			}
+			if t == "tuic" {
+				proxy["password"] = obMap["password"]
+				if congestion_control, ok := obMap["congestion_control"].(string); ok {
+					proxy["congestion-controller"] = congestion_control
+				}
+			}
+		case "trojan":
+			proxy["password"] = obMap["password"]
+		case "socks", "http":
+			if t == "socks" {
+				proxy["type"] = "socks5"
+			}
+			proxy["username"] = obMap["username"]
+			proxy["password"] = obMap["password"]
+		case "hysteria", "hysteria2":
+			if _, ok := obMap["up_mbps"].(float64); ok {
+				proxy["up"] = obMap["up_mbps"]
+			}
+			if _, ok := obMap["down_mbps"].(float64); ok {
+				proxy["down"] = obMap["down_mbps"]
+			}
+			if t == "hysteria" {
+				proxy["auth-str"] = obMap["auth_str"]
+				if obfs, ok := obMap["obfs"].(string); ok {
+					proxy["obfs"] = obfs
+				}
+			} else {
+				proxy["password"] = obMap["password"]
+				if obfs, ok := obMap["obfs"].(map[string]interface{}); ok {
+					proxy["obfs"] = obfs["type"]
+					proxy["obfs-password"] = obfs["password"]
+				}
+			}
+
+			if portLists, ok := obMap["server_ports"].([]interface{}); ok {
+				var ports []string
+				for _, portList := range portLists {
+					portRange, _ := portList.(string)
+					ports = append(ports, strings.ReplaceAll(portRange, ":", "-"))
+				}
+				proxy["ports"] = strings.Join(ports, ",")
+			}
+		case "anytls":
+			proxy["password"] = obMap["password"]
+		case "shadowsocks":
+			proxy["type"] = "ss"
+			proxy["cipher"] = obMap["method"]
+			proxy["password"] = obMap["password"]
+			if network, ok := obMap["network"].(string); ok && network != "tcp" {
+				proxy["udp"] = true
+			}
+			if uot, ok := obMap["udp_over_tcp"].(bool); ok && uot {
+				proxy["udp-over-tcp"] = true
+			}
+		default:
+			continue
+		}
+
+		// Mihomo keeps UDP off unless the proxy opts in
+		if defaultUdp {
+			switch proxy["type"] {
+			case "vmess", "vless":
+				proxy["udp"] = true
+				proxy["packet-encoding"] = "xudp"
+			case "trojan", "ss", "socks5", "anytls":
+				proxy["udp"] = true
+			}
+		}
+
+		// TLS params
+		tls, isTls := obMap["tls"].(map[string]interface{})
+		if isTls {
+			tlsEnabled, ok := tls["enabled"].(bool)
+			if ok && !tlsEnabled {
+				isTls = false
+			}
+		}
+		if isTls {
+			proxy["tls"] = tls["enabled"]
+
+			switch t {
+			case "hysteria", "hysteria2", "tuic":
+				proxy["alpn"] = []string{"h3"}
+			default:
+				switch alpn := tls["alpn"].(type) {
+				case []string, []interface{}:
+					proxy["alpn"] = alpn
+				}
+			}
+
+			// Add reality if exists
+			// Comma-ok on enabled as well: a config written by hand, or one
+			// carried over from an older schema, can leave the key absent and
+			// the bare assertion took the subscription endpoint down.
+			if reality, ok := tls["reality"].(map[string]interface{}); ok && asBool(reality["enabled"]) {
+				reality_opts := make(map[string]interface{})
+				if pbk, ok := reality["public_key"].(string); ok {
+					reality_opts["public-key"] = pbk
+				}
+				if sid, ok := reality["short_id"].(string); ok {
+					reality_opts["short-id"] = sid
+				}
+				proxy["reality-opts"] = reality_opts
+			}
+			if utls, ok := tls["utls"].(map[string]interface{}); ok {
+				if enabled, ok := utls["enabled"].(bool); ok && enabled {
+					if fp, ok := utls["fingerprint"].(string); ok {
+						proxy["client-fingerprint"] = fp
+					}
+				}
+			}
+			if sni, ok := tls["server_name"].(string); ok {
+				if t == "vless" || t == "vmess" {
+					proxy["servername"] = sni
+				} else {
+					proxy["sni"] = sni
+				}
+			}
+			if insecure, ok := tls["insecure"].(bool); ok && insecure {
+				proxy["skip-cert-verify"] = insecure
+			}
+			if fp := util.CertSha256Hex(util.CertPEMFromTLS(tls)); fp != "" {
+				proxy["fingerprint"] = fp
+			}
+			// ech outbounds
+			if ech, ok := tls["ech"].(map[string]interface{}); ok && asBool(ech["enabled"]) {
+				ech_config, _ := ech["config"].([]interface{})
+				ech_string := ""
+				// The whole config, not [1:len-1]. The loop dropped the first
+				// and last line of every ECH key, so the value Clash received
+				// was never the one that was configured.
+				for _, line := range ech_config {
+					if s, ok := line.(string); ok {
+						ech_string += s
+					}
+				}
+				proxy["ech-opts"] = map[string]interface{}{
+					"enable": true,
+					"config": ech_string,
+				}
+			}
+		}
+
+		// Transport if exist
+		if transport, ok := obMap["transport"].(map[string]interface{}); ok {
+			tt, _ := transport["type"].(string)
+			switch tt {
+			case "http":
+				httpOpts := make(map[string]interface{})
+				if path, ok := transport["path"].([]interface{}); ok && len(path) > 0 {
+					httpOpts["path"] = path[0]
+				} else if path, ok := transport["path"].(string); ok {
+					httpOpts["path"] = path
+				}
+				if host, ok := transport["host"].([]interface{}); ok && len(host) > 0 {
+					httpOpts["host"] = host[0]
+				}
+				if isTls {
+					proxy["network"] = "h2"
+					proxy["h2-opts"] = httpOpts
+				} else {
+					proxy["network"] = "http"
+					proxy["http-opts"] = map[string]interface{}{"path": []interface{}{httpOpts["path"]}, "host": httpOpts["host"]}
+				}
+			case "ws", "httpupgrade":
+				proxy["network"] = "ws"
+				wsOpts := make(map[string]interface{})
+				if path, ok := transport["path"].(string); ok {
+					wsOpts["path"] = path
+				}
+				wsHeaders := make(map[string]interface{})
+				// Only the Host header is carried into Clash
+				if headers, ok := transport["headers"].(map[string]interface{}); ok {
+					if v, ok := headers["Host"]; ok {
+						if arr, ok := v.([]interface{}); ok {
+							if len(arr) > 0 {
+								wsHeaders["Host"] = arr[0]
+							}
+						} else {
+							wsHeaders["Host"] = v
+						}
+					}
+				}
+				if _, hasHost := wsHeaders["Host"]; !hasHost {
+					if host, ok := transport["host"].(string); ok && host != "" {
+						wsHeaders["Host"] = host
+					} else if isTls {
+						if sni, ok := tls["server_name"].(string); ok && sni != "" {
+							wsHeaders["Host"] = sni
+						}
+					}
+				}
+				if len(wsHeaders) > 0 {
+					wsOpts["headers"] = wsHeaders
+				}
+				if ed, ok := transport["early_data_header_name"].(string); ok {
+					wsOpts["early-data-header-name"] = ed
+				}
+				if tt == "httpupgrade" {
+					wsOpts["v2ray-http-upgrade"] = true
+				}
+				proxy["ws-opts"] = wsOpts
+			case "xhttp":
+				proxy["network"] = "xhttp"
+				proxy["xhttp-opts"] = xhttpOptsFromTransport(transport)
+			case "grpc":
+				proxy["network"] = "grpc"
+				grpcOpts := make(map[string]interface{})
+				if service_name, ok := transport["service_name"].(string); ok {
+					grpcOpts["grpc-service-name"] = service_name
+				}
+				proxy["grpc-opts"] = grpcOpts
+			}
+		}
+
+		// Multiplex
+		if mux, ok := obMap["multiplex"].(map[string]interface{}); ok {
+			if enabled, ok := mux["enabled"].(bool); ok && enabled {
+				smux := make(map[string]interface{})
+				smux["enabled"] = true
+				if protocol, ok := mux["protocol"].(string); ok {
+					smux["protocol"] = protocol
+				}
+				if _, ok := mux["max_connections"].(float64); ok {
+					smux["max-connections"] = mux["max_connections"]
+				}
+				if _, ok := mux["min_streams"].(float64); ok {
+					smux["min-streams"] = mux["min_streams"]
+				}
+				if _, ok := mux["max_streams"].(float64); ok {
+					smux["max-streams"] = mux["max_streams"]
+				}
+				if _, ok := mux["padding"].(bool); ok {
+					smux["padding"] = mux["padding"]
+				}
+				if brutal, ok := mux["brutal"].(map[string]interface{}); ok {
+					if enabled, ok := brutal["enabled"].(bool); ok && enabled {
+						brutalOpts := make(map[string]interface{})
+						brutalOpts["enabled"] = true
+						if _, ok := brutal["up_mbps"].(float64); ok {
+							brutalOpts["up"] = brutal["up_mbps"]
+						}
+						if _, ok := brutal["down_mbps"].(float64); ok {
+							brutalOpts["down"] = brutal["down_mbps"]
+						}
+						smux["brutal-opts"] = brutalOpts
+					}
+				}
+				proxy["smux"] = smux
+			}
+		}
+
+		proxies = append(proxies, proxy)
+		proxyTags = append(proxyTags, obMap["tag"].(string))
+	}
+
+	// Merge proxies and proxy groups if exist
+	var output map[string]interface{}
+	err := yaml.Unmarshal([]byte(basicConfig), &output)
+	if err != nil {
+		logger.Error(err.Error())
+	}
+
+	if p, ok := output["proxies"].([]interface{}); ok {
+		output["proxies"] = append(p, proxies...)
+	} else {
+		output["proxies"] = proxies
+	}
+
+	noDefGrp, _ := s.SettingService.GetSubClashNoDefGrp()
+	sprtAll, _ := s.SettingService.GetSubClashSprtAll()
+	if err := buildProxyGroups(output, proxyTags, noDefGrp, sprtAll); err != nil {
+		return "", err
+	}
+
+	result, err := yaml.Marshal(output)
+	if err != nil {
+		return "", err
+	}
+	return string(result), nil
+}
+
+func buildProxyGroups(output map[string]interface{}, proxyTags []string, noDefGrp bool, sprtAll bool) error {
+	customGroups := proxyGroupList(output["proxy-groups"])
+	proxyGroups := mergeProxyGroups(nil, customGroups)
+
+	if !noDefGrp {
+		var defaultGroups []map[string]interface{}
+		if err := yaml.Unmarshal([]byte(ProxyGroups), &defaultGroups); err != nil {
+			return err
+		}
+		defaultGroups[1]["proxies"] = proxyTags
+		defaultGroups[0]["proxies"] = append([]string{defaultGroups[1]["name"].(string)}, proxyTags...)
+		// Don't inject a duplicate "Auto" if the user already defines one.
+		if hasGroupNamed(customGroups, "Auto") {
+			defaultGroups = defaultGroups[:1]
+			defaultGroups[0]["proxies"] = proxyTags
+		}
+		proxyGroups = mergeProxyGroups(defaultGroups, customGroups)
+	}
+
+	if len(proxyGroups) > 0 || !noDefGrp {
+		resolveProxyGroupTags(proxyGroups, proxyTags, sprtAll)
+		output["proxy-groups"] = proxyGroups
+	}
+	return nil
+}
+
+func proxyGroupList(pg interface{}) []map[string]interface{} {
+	switch list := pg.(type) {
+	case []map[string]interface{}:
+		return list
+	case []interface{}:
+		groups := make([]map[string]interface{}, 0, len(list))
+		for _, item := range list {
+			if group, ok := item.(map[string]interface{}); ok {
+				groups = append(groups, group)
+			}
+		}
+		return groups
+	}
+	return nil
+}
+
+func mergeProxyGroups(base, extra []map[string]interface{}) []map[string]interface{} {
+	groups := make([]map[string]interface{}, 0, len(base)+len(extra))
+	index := make(map[string]int)
+
+	for _, group := range append(base, extra...) {
+		if gname, ok := group["name"].(string); ok {
+			if i, exists := index[gname]; exists {
+				mergeProxyGroup(groups[i], group)
+				continue
+			}
+			index[gname] = len(groups)
+		}
+		groups = append(groups, group)
+	}
+	return groups
+}
+
+func mergeProxyGroup(dst, src map[string]interface{}) {
+	for key, value := range src {
+		switch key {
+		case "name":
+			continue
+		case "proxies":
+			dst["proxies"] = appendProxyNames(proxyNames(dst["proxies"]), proxyNames(value))
+		default:
+			if _, exists := dst[key]; !exists {
+				dst[key] = value
+			}
+		}
+	}
+}
+
+func resolveProxyGroupTags(groups []map[string]interface{}, proxyTags []string, sprtAll bool) {
+	for _, group := range groups {
+		proxies := proxyNames(group["proxies"])
+		if sprtAll {
+			proxies = expandAllProxyTag(proxies, proxyTags)
+		}
+		if filter, _ := group["filter"].(string); filter != "" {
+			proxies = appendProxyNames(proxies, filteredProxyTags(proxyTags, filter))
+		}
+		if len(proxies) > 0 {
+			group["proxies"] = proxies
+		}
+	}
+}
+
+func expandAllProxyTag(proxies []string, proxyTags []string) []string {
+	result := make([]string, 0, len(proxies)+len(proxyTags))
+	for _, proxy := range proxies {
+		if strings.EqualFold(proxy, "all") {
+			result = appendProxyNames(result, proxyTags)
+		} else {
+			result = appendProxyNames(result, []string{proxy})
+		}
+	}
+	return result
+}
+
+func filteredProxyTags(proxyTags []string, filter string) []string {
+	re, err := regexp.Compile(filter)
+	if err != nil {
+		logger.Warning("sub: invalid Clash proxy-group filter:", err)
+		return nil
+	}
+	var result []string
+	for _, tag := range proxyTags {
+		if re.MatchString(tag) {
+			result = append(result, tag)
+		}
+	}
+	return result
+}
+
+func proxyNames(value interface{}) []string {
+	switch list := value.(type) {
+	case []string:
+		return append([]string(nil), list...)
+	case []interface{}:
+		proxies := make([]string, 0, len(list))
+		for _, item := range list {
+			if name, ok := item.(string); ok {
+				proxies = append(proxies, name)
+			}
+		}
+		return proxies
+	}
+	return nil
+}
+
+func appendProxyNames(proxies []string, names []string) []string {
+	seen := make(map[string]bool, len(proxies)+len(names))
+	result := make([]string, 0, len(proxies)+len(names))
+	for _, name := range append(proxies, names...) {
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		result = append(result, name)
+	}
+	return result
+}
+
+func hasGroupNamed(groups []map[string]interface{}, name string) bool {
+	for _, group := range groups {
+		if gname, ok := group["name"].(string); ok && gname == name {
+			return true
+		}
+	}
+	return false
+}

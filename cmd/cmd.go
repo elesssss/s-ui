@@ -1,0 +1,137 @@
+package cmd
+
+import (
+	"flag"
+	"fmt"
+	"os"
+	"runtime/debug"
+
+	"github.com/alireza0/s-ui/cmd/migration"
+	"github.com/alireza0/s-ui/config"
+)
+
+func ParseCmd() {
+	var showVersion bool
+	flag.BoolVar(&showVersion, "v", false, "show version")
+
+	adminCmd := flag.NewFlagSet("admin", flag.ExitOnError)
+	settingCmd := flag.NewFlagSet("setting", flag.ExitOnError)
+	backupCmd := flag.NewFlagSet("backup", flag.ExitOnError)
+
+	var username string
+	var password string
+	var port int
+	var path string
+	var subPort int
+	var subPath string
+	var reset bool
+	var assumeYes bool
+	var show bool
+	var output string
+	var exclude string
+	backupCmd.StringVar(&output, "output", "", "backup output file path (use - for stdout)")
+	backupCmd.StringVar(&exclude, "exclude", "", "comma-separated tables to exclude: changes,stats")
+	settingCmd.BoolVar(&reset, "reset", false, "reset all settings")
+	settingCmd.BoolVar(&show, "show", false, "show current settings")
+	settingCmd.IntVar(&port, "port", 0, "set panel port")
+	settingCmd.StringVar(&path, "path", "", "set panel path")
+	settingCmd.IntVar(&subPort, "subPort", 0, "set sub port")
+	settingCmd.StringVar(&subPath, "subPath", "", "set sub path")
+
+	adminCmd.BoolVar(&show, "show", false, "show first admin credentials")
+	adminCmd.BoolVar(&reset, "reset", false, "reset first admin credentials")
+	adminCmd.BoolVar(&assumeYes, "yes", false, "skip the confirmation prompt for -reset")
+	adminCmd.StringVar(&username, "username", "", "set login username")
+	adminCmd.StringVar(&password, "password", "", "set login password")
+
+	oldUsage := flag.Usage
+	flag.Usage = func() {
+		oldUsage()
+		fmt.Println()
+		fmt.Println("Commands:")
+		fmt.Println("    admin          set/reset/show first admin credentials")
+		fmt.Println("    uri            Show panel URI")
+		fmt.Println("    migrate        migrate form older version")
+		fmt.Println("    setting        set/reset/show settings")
+		fmt.Println("    healthcheck    exit 0 if the panel is listening on its configured port")
+		fmt.Println("    backup         create a database backup")
+		fmt.Println()
+		adminCmd.Usage()
+		fmt.Println()
+		settingCmd.Usage()
+		fmt.Println()
+		backupCmd.Usage()
+	}
+
+	flag.Parse()
+	if showVersion {
+		fmt.Println("S-UI Panel\t", config.GetVersion())
+		info, ok := debug.ReadBuildInfo()
+		if ok {
+			for _, dep := range info.Deps {
+				if dep.Path == "github.com/sagernet/sing-box" {
+					fmt.Println("Sing-Box\t", dep.Version)
+					break
+				}
+			}
+		}
+		return
+	}
+
+	switch os.Args[1] {
+	case "admin":
+		err := adminCmd.Parse(os.Args[2:])
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+		switch {
+		case show:
+			showAdmin()
+		case reset:
+			resetAdmin(assumeYes)
+		default:
+			updateAdmin(username, password)
+			showAdmin()
+		}
+
+	case "uri":
+		getPanelURI()
+
+	case "healthcheck":
+		healthCheck()
+
+	case "migrate":
+		if err := migration.MigrateDb(); err != nil {
+			fmt.Println("Migration failed:", err)
+			os.Exit(1)
+		}
+
+	case "setting":
+		err := settingCmd.Parse(os.Args[2:])
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+		switch {
+		case show:
+			showSetting()
+		case reset:
+			resetSetting()
+		default:
+			updateSetting(port, path, subPort, subPath)
+			showSetting()
+		}
+
+	case "backup":
+		err := backupCmd.Parse(os.Args[2:])
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+		backupDb(output, exclude)
+	default:
+		fmt.Println("Invalid subcommands")
+		flag.Usage()
+	}
+}

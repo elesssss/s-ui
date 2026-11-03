@@ -1,0 +1,311 @@
+package util
+
+import (
+	"encoding/json"
+
+	"github.com/alireza0/s-ui/util/common"
+
+	"github.com/alireza0/s-ui/database/model"
+)
+
+// Fill Inbound's out_json
+func FillOutJson(i *model.Inbound, hostname string) error {
+	switch i.Type {
+	case "l2tp":
+		// L2TP clients use their OS VPN settings, not a sing-box outbound.
+		i.OutJson = nil
+		return nil
+	case "direct", "tun", "redirect", "tproxy":
+		return nil
+	}
+	var outJson map[string]interface{}
+	err := json.Unmarshal(i.OutJson, &outJson)
+	if err != nil {
+		return err
+	}
+
+	if outJson == nil {
+		outJson = make(map[string]interface{})
+	}
+
+	if i.TlsId > 0 {
+		addTls(&outJson, i.Tls)
+	} else {
+		delete(outJson, "tls")
+	}
+
+	inbound, err := i.MarshalFull()
+	if err != nil {
+		return err
+	}
+
+	outJson["type"] = i.Type
+	outJson["tag"] = i.Tag
+	outJson["server"] = NormalizeHost(hostname)
+	outJson["server_port"] = (*inbound)["listen_port"]
+
+	switch i.Type {
+	case "http", "socks", "mixed", "anytls":
+	case "naive":
+		naiveOut(&outJson, *inbound)
+	case "shadowsocks":
+		shadowsocksOut(&outJson, *inbound)
+	case "shadowtls":
+		shadowTlsOut(&outJson, *inbound)
+	case "snell":
+		snellOut(&outJson, *inbound)
+	case "hysteria":
+		hysteriaOut(&outJson, *inbound)
+	case "hysteria2":
+		hysteria2Out(&outJson, *inbound)
+	case "tuic":
+		tuicOut(&outJson, *inbound)
+	case "vless":
+		vlessOut(&outJson, *inbound)
+	case "trojan":
+		trojanOut(&outJson, *inbound)
+	case "vmess":
+		vmessOut(&outJson, *inbound)
+	default:
+		for key := range outJson {
+			delete(outJson, key)
+		}
+	}
+
+	i.OutJson, err = json.MarshalIndent(outJson, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// addTls function
+func addTls(out *map[string]interface{}, tls *model.Tls) {
+	var tlsServer, tlsConfig map[string]interface{}
+	err := json.Unmarshal(tls.Server, &tlsServer)
+	if err != nil {
+		return
+	}
+	err = json.Unmarshal(tls.Client, &tlsConfig)
+	if err != nil {
+		return
+	}
+
+	if enabled, ok := tlsServer["enabled"]; ok {
+		tlsConfig["enabled"] = enabled
+	}
+	if serverName, ok := tlsServer["server_name"]; ok {
+		tlsConfig["server_name"] = serverName
+	}
+	if alpn, ok := tlsServer["alpn"]; ok {
+		tlsConfig["alpn"] = alpn
+	}
+	if minVersion, ok := tlsServer["min_version"]; ok {
+		tlsConfig["min_version"] = minVersion
+	}
+	if maxVersion, ok := tlsServer["max_version"]; ok {
+		tlsConfig["max_version"] = maxVersion
+	}
+	if _, pinned := tlsConfig["certificate_public_key_sha256"]; !pinned {
+		if certificate, ok := tlsServer["certificate"]; ok {
+			tlsConfig["certificate"] = certificate
+		}
+	}
+	if cipherSuites, ok := tlsServer["cipher_suites"]; ok {
+		tlsConfig["cipher_suites"] = cipherSuites
+	}
+	// Both sides of the handshake are given the same limit, as with the
+	// versions and cipher suites above.
+	if handshakeTimeout, ok := tlsServer["handshake_timeout"]; ok {
+		tlsConfig["handshake_timeout"] = handshakeTimeout
+	}
+	// Comma-ok on enabled and on the target map. Both were bare assertions, so
+	// a TLS record written before reality existed -- or one whose enabled flag
+	// came back as a string -- panicked while building a client config.
+	if reality, ok := tlsServer["reality"].(map[string]interface{}); ok && boolOr(reality["enabled"]) {
+		realityConfig, ok := tlsConfig["reality"].(map[string]interface{})
+		if !ok {
+			realityConfig = map[string]interface{}{}
+		}
+		realityConfig["enabled"] = true
+		if shortIDs, ok := reality["short_id"].([]interface{}); ok && len(shortIDs) > 0 {
+			realityConfig["short_id"] = shortIDs[common.RandomInt(len(shortIDs))]
+		}
+		tlsConfig["reality"] = realityConfig
+	}
+	if ech, ok := tlsServer["ech"].(map[string]interface{}); ok && boolOr(ech["enabled"]) {
+		echConfig, ok := tlsConfig["ech"].(map[string]interface{})
+		if !ok {
+			echConfig = map[string]interface{}{}
+		}
+		echConfig["enabled"] = true
+		tlsConfig["ech"] = echConfig
+	}
+
+	(*out)["tls"] = tlsConfig
+}
+
+func naiveOut(out *map[string]interface{}, inbound map[string]interface{}) {
+	delete(*out, "quic")
+	delete(*out, "quic_congestion_control")
+
+	if quic_congestion_control, ok := inbound["quic_congestion_control"].(string); ok && quic_congestion_control != "" {
+		(*out)["quic"] = true
+		switch quic_congestion_control {
+		case "bbr_standard":
+			(*out)["quic_congestion_control"] = "bbr"
+		case "bbr2_variant":
+			(*out)["quic_congestion_control"] = "bbr2"
+		default:
+			(*out)["quic_congestion_control"] = quic_congestion_control
+		}
+	}
+
+}
+
+func shadowsocksOut(out *map[string]interface{}, inbound map[string]interface{}) {
+	if method, ok := inbound["method"].(string); ok {
+		(*out)["method"] = method
+	}
+}
+
+func shadowTlsOut(out *map[string]interface{}, inbound map[string]interface{}) {
+	if version, ok := inbound["version"].(float64); ok && int(version) == 3 {
+		(*out)["version"] = 3
+	} else {
+		for key := range *out {
+			delete(*out, key)
+		}
+	}
+	(*out)["tls"] = map[string]interface{}{"enabled": true}
+}
+
+func snellOut(out *map[string]interface{}, inbound map[string]interface{}) {
+	delete(*out, "obfs_mode")
+	delete(*out, "obfs_host")
+	delete(*out, "mode")
+
+	version, _ := inbound["version"].(float64)
+	if int(version) == 6 {
+		(*out)["version"] = 6
+		if mode, ok := inbound["mode"].(string); ok && mode != "" {
+			(*out)["mode"] = mode
+		}
+	} else {
+		(*out)["version"] = 4
+		if obfsMode, ok := inbound["obfs_mode"].(string); ok && obfsMode != "" {
+			(*out)["obfs_mode"] = obfsMode
+		}
+	}
+
+	if psk, ok := inbound["psk"].(string); ok {
+		(*out)["psk"] = psk
+	}
+}
+
+func hysteriaOut(out *map[string]interface{}, inbound map[string]interface{}) {
+	delete(*out, "down_mbps")
+	delete(*out, "up_mbps")
+	delete(*out, "obfs")
+	delete(*out, "recv_window_conn")
+	delete(*out, "disable_mtu_discovery")
+
+	if upMbps, ok := inbound["down_mbps"]; ok {
+		(*out)["up_mbps"] = upMbps
+	}
+	if downMbps, ok := inbound["up_mbps"]; ok {
+		(*out)["down_mbps"] = downMbps
+	}
+	if obfs, ok := inbound["obfs"]; ok {
+		(*out)["obfs"] = obfs
+	}
+	if recvWindow, ok := inbound["recv_window_conn"]; ok {
+		(*out)["recv_window_conn"] = recvWindow
+	}
+	if disableMTU, ok := inbound["disable_mtu_discovery"]; ok {
+		(*out)["disable_mtu_discovery"] = disableMTU
+	}
+}
+
+func hysteria2Out(out *map[string]interface{}, inbound map[string]interface{}) {
+	delete(*out, "down_mbps")
+	delete(*out, "up_mbps")
+	delete(*out, "obfs")
+
+	if upMbps, ok := inbound["down_mbps"]; ok {
+		(*out)["up_mbps"] = upMbps
+	}
+	if downMbps, ok := inbound["up_mbps"]; ok {
+		(*out)["down_mbps"] = downMbps
+	}
+	if obfs, ok := inbound["obfs"]; ok {
+		(*out)["obfs"] = obfs
+	}
+	hysteria2RealmOut(out, inbound)
+}
+
+// hysteria2RealmOut points the client at the realm the inbound registers on.
+// A client reaching the server through a realm must not also name the server
+// address, so those fields go. The token is kept when one was set on the
+// out_json, since the realm can hand clients a token of their own.
+func hysteria2RealmOut(out *map[string]interface{}, inbound map[string]interface{}) {
+	oldRealm, _ := (*out)["realm"].(map[string]interface{})
+	delete(*out, "realm")
+	inRealm, ok := inbound["realm"].(map[string]interface{})
+	if !ok {
+		return
+	}
+	realm := map[string]interface{}{}
+	for _, key := range []string{"server_url", "token", "realm_id", "stun_servers", "ip_version"} {
+		if value, ok := inRealm[key]; ok {
+			realm[key] = value
+		}
+	}
+	if token, _ := oldRealm["token"].(string); token != "" {
+		realm["token"] = token
+	}
+	(*out)["realm"] = realm
+	delete(*out, "server")
+	delete(*out, "server_port")
+	delete(*out, "server_ports")
+	delete(*out, "hop_interval")
+}
+
+func tuicOut(out *map[string]interface{}, inbound map[string]interface{}) {
+	delete(*out, "zero_rtt_handshake")
+	delete(*out, "heartbeat")
+	if congestionControl, ok := inbound["congestion_control"].(string); ok {
+		(*out)["congestion_control"] = congestionControl
+	} else {
+		(*out)["congestion_control"] = "cubic"
+	}
+	if zeroRTT, ok := inbound["zero_rtt_handshake"].(bool); ok {
+		(*out)["zero_rtt_handshake"] = zeroRTT
+	}
+	if heartbeat, ok := inbound["heartbeat"]; ok {
+		(*out)["heartbeat"] = heartbeat
+	}
+}
+
+func vlessOut(out *map[string]interface{}, inbound map[string]interface{}) {
+	delete(*out, "transport")
+	if transport, ok := inbound["transport"]; ok {
+		(*out)["transport"] = transport
+	}
+}
+
+func trojanOut(out *map[string]interface{}, inbound map[string]interface{}) {
+	delete(*out, "transport")
+	if transport, ok := inbound["transport"]; ok {
+		(*out)["transport"] = transport
+	}
+}
+
+func vmessOut(out *map[string]interface{}, inbound map[string]interface{}) {
+	(*out)["alter_id"] = 0
+	delete(*out, "transport")
+	if transport, ok := inbound["transport"]; ok {
+		(*out)["transport"] = transport
+	}
+}

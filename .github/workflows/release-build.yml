@@ -1,0 +1,274 @@
+name: Build and Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release tag and panel version (for example v1.6.7-l2tp)'
+        required: true
+        default: 'latest'
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-build-${{ inputs.version }}
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: '26'
+  CRONET_GO_REPO: https://github.com/sagernet/cronet-go.git
+  BOOTLIN_BASE_URL: https://toolchains.bootlin.com/downloads/releases/toolchains
+
+jobs:
+  build-frontend:
+    name: Build frontend
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.set-version.outputs.version }}
+    steps:
+      - name: Checkout frontend submodule
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          submodules: recursive
+
+      - name: Validate release version
+        id: set-version
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          test -n "$RELEASE_VERSION"
+          git check-ref-format "refs/tags/$RELEASE_VERSION"
+          printf 'version=%s\n' "$RELEASE_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run build
+          test -s dist/index.html
+
+      - name: Upload frontend artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist/
+          if-no-files-found: error
+          retention-days: 1
+
+  build:
+    name: Build Linux (${{ matrix.arch }})
+    needs: build-frontend
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: amd64, goarch: amd64, goarm: '', bootlin: x86-64, naive: true }
+          - { arch: arm64, goarch: arm64, goarm: '', bootlin: aarch64, naive: true }
+          - { arch: armv7, goarch: arm, goarm: '7', bootlin: armv7-eabihf, naive: true }
+          - { arch: armv6, goarch: arm, goarm: '6', bootlin: armv6-eabihf, naive: false }
+          - { arch: armv5, goarch: arm, goarm: '5', bootlin: armv5-eabi, naive: false }
+          - { arch: '386', goarch: '386', goarm: '', bootlin: x86-i686, naive: true }
+          - { arch: s390x, goarch: s390x, goarm: '', bootlin: s390x-z13, naive: false }
+    steps:
+      - name: Checkout backend
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Remove previous frontend assets
+        run: rm -rf web/html
+
+      - name: Download frontend artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: web/html
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Download Go modules
+        run: go mod download
+
+      # Keep the original release's Naive support and CGO SQLite on the
+      # platforms supported by cronet-go's Chromium/musl toolchain.
+      - name: Resolve cronet-go commit
+        if: matrix.naive
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          CRONET_VERSION=$(go list -m -f '{{.Version}}' github.com/sagernet/cronet-go)
+          CRONET_SHORT=${CRONET_VERSION##*-}
+          CRONET_COMMIT=$(gh api "repos/SagerNet/cronet-go/commits/$CRONET_SHORT" --jq '.sha')
+          [[ "$CRONET_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          printf 'CRONET_COMMIT=%s\n' "$CRONET_COMMIT" >> "$GITHUB_ENV"
+
+      - name: Checkout cronet-go toolchain
+        if: matrix.naive
+        run: |
+          set -euo pipefail
+          CRONET_DIR="$RUNNER_TEMP/sui-cronet-go"
+          git init "$CRONET_DIR"
+          git -C "$CRONET_DIR" remote add origin "$CRONET_GO_REPO"
+          git -C "$CRONET_DIR" fetch --depth=1 origin "$CRONET_COMMIT"
+          git -C "$CRONET_DIR" checkout FETCH_HEAD
+          git -C "$CRONET_DIR" submodule update --init --recursive --depth=1
+
+      - name: Regenerate Debian keyring for cronet sysroot
+        if: matrix.naive
+        working-directory: ${{ runner.temp }}/sui-cronet-go
+        run: |
+          set -euo pipefail
+          rm -f naiveproxy/src/build/linux/sysroot_scripts/keyring.gpg
+          GPG_TTY=/dev/null ./naiveproxy/src/build/linux/sysroot_scripts/generate_keyring.sh
+
+      - name: Cache Chromium toolchain
+        if: matrix.naive
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ runner.temp }}/sui-cronet-go/naiveproxy/src/third_party/llvm-build/
+            ${{ runner.temp }}/sui-cronet-go/naiveproxy/src/gn/out/
+            ${{ runner.temp }}/sui-cronet-go/naiveproxy/src/chrome/build/pgo_profiles/
+            ${{ runner.temp }}/sui-cronet-go/naiveproxy/src/out/sysroot-build/
+          key: chromium-toolchain-${{ matrix.arch }}-musl-${{ env.CRONET_COMMIT }}
+
+      - name: Set up Chromium musl compiler
+        if: matrix.naive
+        working-directory: ${{ runner.temp }}/sui-cronet-go
+        env:
+          TARGET_ARCH: ${{ matrix.goarch }}
+        run: |
+          set -euo pipefail
+          go run ./cmd/build-naive --target="linux/$TARGET_ARCH" --libc=musl download-toolchain
+          go run ./cmd/build-naive --target="linux/$TARGET_ARCH" --libc=musl env > "$RUNNER_TEMP/sui-cronet-env.txt"
+          while IFS= read -r line; do
+            line="${line#export }"
+            [[ -z "$line" ]] && continue
+            printf '%s\n' "$line" >> "$GITHUB_ENV"
+          done < "$RUNNER_TEMP/sui-cronet-env.txt"
+
+      # armv5, armv6 and s390x use Bootlin musl, as in the original release.
+      - name: Set up Bootlin musl compiler
+        if: ${{ !matrix.naive }}
+        env:
+          BOOTLIN_ARCH: ${{ matrix.bootlin }}
+        run: |
+          set -euo pipefail
+          TARBALL_BASE="$BOOTLIN_BASE_URL/$BOOTLIN_ARCH/tarballs"
+          curl --retry 3 -fsSL "$TARBALL_BASE/" -o "$RUNNER_TEMP/sui-bootlin-index.html"
+          TARBALL=$(grep -oE "${BOOTLIN_ARCH}--musl--stable-[^\"<>[:space:]]+\.tar\.xz" "$RUNNER_TEMP/sui-bootlin-index.html" | sort -u | tail -n1 || true)
+          if [ -z "$TARBALL" ]; then
+            echo "No stable Bootlin musl toolchain found for $BOOTLIN_ARCH" >&2
+            exit 1
+          fi
+          curl --retry 3 -fsSL "$TARBALL_BASE/$TARBALL" -o "$RUNNER_TEMP/sui-bootlin.tar.xz"
+          TOOLCHAIN_DIR="$RUNNER_TEMP/sui-bootlin"
+          mkdir -p "$TOOLCHAIN_DIR"
+          tar -xJf "$RUNNER_TEMP/sui-bootlin.tar.xz" -C "$TOOLCHAIN_DIR" --strip-components=1
+          BIN_DIR="$TOOLCHAIN_DIR/bin"
+          mapfile -t COMPILERS < <(find "$BIN_DIR" -maxdepth 1 -name '*-gcc' -executable | sort)
+          if [ "${#COMPILERS[@]}" -eq 0 ]; then
+            echo "No cross gcc found in $BIN_DIR" >&2
+            exit 1
+          fi
+          printf 'CC=%s\n' "${COMPILERS[0]}" >> "$GITHUB_ENV"
+          printf '%s\n' "$BIN_DIR" >> "$GITHUB_PATH"
+
+      - name: Build s-ui with embedded frontend
+        env:
+          RELEASE_VERSION: ${{ needs.build-frontend.outputs.version }}
+          GOOS: linux
+          GOARCH: ${{ matrix.goarch }}
+          GOARM: ${{ matrix.goarm }}
+          CGO_ENABLED: '1'
+          BUILD_NAIVE: ${{ matrix.naive }}
+        run: |
+          set -euo pipefail
+          test -s web/html/index.html
+          printf '%s\n' "$RELEASE_VERSION" > config/version
+          . ./build-tags.sh
+          if [ "$BUILD_NAIVE" = true ]; then
+            PROFILE=release
+          else
+            PROFILE=test
+          fi
+          TAGS=$(tags_for "$PROFILE")
+          LDFLAGS=$(ldflags_for "$PROFILE")
+          go build -mod=readonly -trimpath -tags "$TAGS" \
+            -ldflags "$LDFLAGS -linkmode external -extldflags '-static'" \
+            -o sui main.go
+          file sui
+          readelf -l sui > "$RUNNER_TEMP/sui-program-headers.txt"
+          if grep -q INTERP "$RUNNER_TEMP/sui-program-headers.txt"; then
+            echo 'Expected a static Linux binary' >&2
+            exit 1
+          fi
+
+      - name: Package installation archive
+        env:
+          TARGET_ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          mkdir -p s-ui
+          install -m 755 sui s-ui/sui
+          install -m 644 s-ui.service s-ui/s-ui.service
+          install -m 755 s-ui.sh s-ui/s-ui.sh
+          tar -czf "s-ui-linux-$TARGET_ARCH.tar.gz" s-ui
+
+      - name: Upload backend artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-linux-${{ matrix.arch }}
+          path: s-ui-linux-${{ matrix.arch }}.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+
+  release:
+    name: Publish GitHub Release
+    needs: [build-frontend, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download backend artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: build-linux-*
+          path: dist
+          merge-multiple: true
+
+      - name: Generate checksums
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          sha256sum s-ui-linux-*.tar.gz > SHA256SUMS
+          sha256sum --check SHA256SUMS
+
+      - name: Create or update Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.build-frontend.outputs.version }}
+          name: Release ${{ needs.build-frontend.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            dist/s-ui-linux-*.tar.gz
+            dist/SHA256SUMS

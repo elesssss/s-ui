@@ -1,0 +1,481 @@
+package service
+
+import (
+	"encoding/json"
+	"strconv"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/alireza0/s-ui/core"
+	"github.com/alireza0/s-ui/database"
+	"github.com/alireza0/s-ui/database/model"
+	"github.com/alireza0/s-ui/logger"
+	"github.com/alireza0/s-ui/util/common"
+
+	"gorm.io/gorm"
+)
+
+var (
+	LastUpdate atomic.Int64
+	corePtr    *core.Core
+
+	// Serialises whole start/stop/restart/maintenance sequences, not just a
+	// flag: corePtr.IsRunning() is false for the seconds a start takes.
+	// Outer lock; core.Core.mu is the inner one.
+	lifecycleMu sync.Mutex
+
+	failMu            sync.Mutex
+	lastStartFailTime time.Time
+	startCooldown     = 15 * time.Second
+)
+
+type ConfigService struct {
+	ClientService
+	TlsService
+	SettingService
+	InboundService
+	OutboundService
+	ServicesService
+	EndpointService
+}
+
+// SingBoxConfig is the shape GetConfig decodes the stored base config into
+// before filling in the objects held in the database. Every top-level sing-box
+// key has to be listed here: anything missing is silently dropped on the way
+// through, even when the operator wrote it by hand.
+type SingBoxConfig struct {
+	Schema string          `json:"$schema,omitempty"`
+	Log    json.RawMessage `json:"log"`
+	Dns    json.RawMessage `json:"dns"`
+	Ntp    json.RawMessage `json:"ntp"`
+	// Global certificate store settings, and the shared certificate providers
+	// referenced by tag from a TLS config's certificate_provider. Providers are
+	// edited alongside the TLS configs but stored in the base config.
+	Certificate          json.RawMessage   `json:"certificate,omitempty"`
+	CertificateProviders []json.RawMessage `json:"certificate_providers,omitempty"`
+	// Named HTTP clients, referenced by remote rule-sets and by
+	// route.default_http_client.
+	HTTPClients       []json.RawMessage `json:"http_clients,omitempty"`
+	NetworkNamespaces []json.RawMessage `json:"network_namespaces,omitempty"`
+	Inbounds          []json.RawMessage `json:"inbounds"`
+	Outbounds         []json.RawMessage `json:"outbounds"`
+	Services          []json.RawMessage `json:"services"`
+	Endpoints         []json.RawMessage `json:"endpoints"`
+	Route             json.RawMessage   `json:"route"`
+	Experimental      json.RawMessage   `json:"experimental"`
+}
+
+func NewConfigService(core *core.Core) *ConfigService {
+	corePtr = core
+	return &ConfigService{}
+}
+
+func (s *ConfigService) GetConfig(data string) (*[]byte, error) {
+	var err error
+	if len(data) == 0 {
+		data, err = s.SettingService.GetConfig()
+		if err != nil {
+			return nil, err
+		}
+	}
+	return s.getConfigAt(database.GetDB(), data)
+}
+
+func (s *ConfigService) getConfigAt(db *gorm.DB, data string) (*[]byte, error) {
+	singboxConfig := SingBoxConfig{}
+	err := json.Unmarshal([]byte(data), &singboxConfig)
+	if err != nil {
+		return nil, err
+	}
+
+	singboxConfig.Inbounds, err = s.InboundService.GetAllConfig(db)
+	if err != nil {
+		return nil, err
+	}
+	singboxConfig.Outbounds, err = s.OutboundService.GetAllConfig(db)
+	if err != nil {
+		return nil, err
+	}
+	singboxConfig.Services, err = s.ServicesService.GetAllConfig(db)
+	if err != nil {
+		return nil, err
+	}
+	singboxConfig.Endpoints, err = s.EndpointService.GetAllConfig(db)
+	if err != nil {
+		return nil, err
+	}
+	if err = ensureDefaultHTTPClient(&singboxConfig); err != nil {
+		return nil, err
+	}
+	rawConfig, err := json.MarshalIndent(singboxConfig, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return &rawConfig, nil
+}
+
+// defaultHTTPClientTag names the HTTP client remote rule-sets download over
+// when the operator has not set one up.
+const defaultHTTPClientTag = "default"
+
+// ensureDefaultHTTPClient declares an HTTP client for remote rule-sets that
+// name none. Left implicit, sing-box 1.14 downloads them over the default
+// outbound and reports that fallback as deprecated; declaring a client with no
+// detour says exactly the same thing. It is added to the generated config
+// rather than to the stored one, so it also covers rule-sets added later.
+//
+// An operator who named a default themselves is left alone; one who only
+// declared clients still gets a default, since otherwise the rule-sets that
+// name none keep falling back.
+func ensureDefaultHTTPClient(config *SingBoxConfig) error {
+	if len(config.Route) == 0 {
+		return nil
+	}
+	var route map[string]json.RawMessage
+	if err := json.Unmarshal(config.Route, &route); err != nil {
+		// A route section the panel cannot read is passed through untouched.
+		return nil
+	}
+	if raw, ok := route["default_http_client"]; ok && !isEmptyRawJSON(raw) {
+		return nil
+	}
+	if !hasImplicitHTTPClientRuleSet(route["rule_set"]) {
+		return nil
+	}
+
+	tagName := unusedHTTPClientTag(config.HTTPClients)
+	client, err := json.Marshal(map[string]string{"tag": tagName})
+	if err != nil {
+		return err
+	}
+	tag, err := json.Marshal(tagName)
+	if err != nil {
+		return err
+	}
+	route["default_http_client"] = tag
+	encodedRoute, err := json.Marshal(route)
+	if err != nil {
+		return err
+	}
+	config.HTTPClients = append(config.HTTPClients, client)
+	config.Route = encodedRoute
+	return nil
+}
+
+// unusedHTTPClientTag names the added client without colliding with one the
+// operator declared.
+func unusedHTTPClientTag(clients []json.RawMessage) string {
+	taken := make(map[string]struct{}, len(clients))
+	for _, client := range clients {
+		var fields struct {
+			Tag string `json:"tag"`
+		}
+		if err := json.Unmarshal(client, &fields); err == nil && fields.Tag != "" {
+			taken[fields.Tag] = struct{}{}
+		}
+	}
+	tag := defaultHTTPClientTag
+	for i := 2; ; i++ {
+		if _, exists := taken[tag]; !exists {
+			return tag
+		}
+		tag = defaultHTTPClientTag + "-" + strconv.Itoa(i)
+	}
+}
+
+// hasImplicitHTTPClientRuleSet reports whether any remote rule-set would fall
+// back to the implicit default HTTP client.
+func hasImplicitHTTPClientRuleSet(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	var ruleSets []map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &ruleSets); err != nil {
+		return false
+	}
+	for _, ruleSet := range ruleSets {
+		var ruleSetType string
+		if err := json.Unmarshal(ruleSet["type"], &ruleSetType); err != nil || ruleSetType != "remote" {
+			continue
+		}
+		if httpClient, ok := ruleSet["http_client"]; !ok || isEmptyRawJSON(httpClient) {
+			return true
+		}
+	}
+	return false
+}
+
+func isEmptyRawJSON(raw json.RawMessage) bool {
+	switch string(raw) {
+	case "", "null", `""`, "{}", "[]":
+		return true
+	}
+	return false
+}
+
+// inMaintenance reports whether the operator has asked for the core to stay
+// stopped. It is checked here rather than at each caller because five different
+// paths start the core -- boot, the five-second watchdog, every config save,
+// the scheduled traffic reset and a base config change -- and a maintenance
+// mode that any one of them could undo would not be one.
+func (s *ConfigService) inMaintenance() bool {
+	maintenance, err := s.SettingService.GetMaintenance()
+	if err != nil {
+		logger.Warning("unable to read maintenance setting, assuming off:", err)
+		return false
+	}
+	return maintenance
+}
+
+// StartCore starts the core if it is not already running. It does not queue:
+// the five-second watchdog calls this, so a caller that finds a sequence in
+// flight returns rather than piling up behind it.
+func (s *ConfigService) StartCore() error {
+	if !lifecycleMu.TryLock() {
+		return nil
+	}
+	defer lifecycleMu.Unlock()
+	return s.startCoreLocked(false)
+}
+
+// startCoreLocked starts the core. The caller must hold lifecycleMu.
+// bypassCooldown is set for operator actions, so a recent failure cannot make
+// a button press silently do nothing.
+func (s *ConfigService) startCoreLocked(bypassCooldown bool) error {
+	// Re-checked under the lock: maintenance can be switched on while this
+	// goroutine was waiting.
+	if s.inMaintenance() {
+		return nil
+	}
+	if corePtr.IsRunning() {
+		return nil
+	}
+	if !bypassCooldown && coolingDown() {
+		logger.Info("start core cooldown ", startCooldown/time.Second, " seconds")
+		return nil
+	}
+
+	// A dead L2TP worker can leave the other listeners of its box alive.
+	// Release that box before recovery binds the same ports again.
+	if corePtr.GetInstance() != nil {
+		if err := corePtr.HealthError(); err != nil {
+			logger.Error("core health check: ", err)
+		}
+		if err := corePtr.Stop(); err != nil {
+			return err
+		}
+	}
+	logger.Info("starting core")
+	rawConfig, err := s.GetConfig("")
+	if err != nil {
+		return err
+	}
+	if err = corePtr.Start(*rawConfig); err != nil {
+		failMu.Lock()
+		lastStartFailTime = time.Now()
+		failMu.Unlock()
+		logger.Error("start sing-box err:", err.Error())
+		return err
+	}
+	// Cleared on success, or one failure arms the cooldown forever.
+	failMu.Lock()
+	lastStartFailTime = time.Time{}
+	failMu.Unlock()
+	logger.Info("sing-box started")
+	return nil
+}
+
+// coolingDown reports whether a start failed recently enough that the watchdog
+// should hold off.
+func coolingDown() bool {
+	failMu.Lock()
+	defer failMu.Unlock()
+	return time.Since(lastStartFailTime) < startCooldown
+}
+
+// RestartCore stops and starts the core as one sequence. It blocks rather than
+// bailing out like StartCore, so an operator action cannot report success with
+// the core left down.
+func (s *ConfigService) RestartCore() error {
+	lifecycleMu.Lock()
+	defer lifecycleMu.Unlock()
+
+	if s.inMaintenance() {
+		return common.NewError("core is stopped for maintenance")
+	}
+	if err := s.stopCoreLocked(); err != nil {
+		return err
+	}
+	return s.startCoreLocked(true)
+}
+
+// SetMaintenance takes the core out of service, or puts it back. The setting is
+// written first so the watchdog will not restart what was just stopped, and the
+// blocking lock means an in-flight start has finished before we look at
+// IsRunning().
+func (s *ConfigService) SetMaintenance(enabled bool) error {
+	lifecycleMu.Lock()
+	defer lifecycleMu.Unlock()
+
+	if err := s.SettingService.SetMaintenance(enabled); err != nil {
+		return err
+	}
+	if enabled {
+		if corePtr.GetInstance() == nil {
+			return nil
+		}
+		logger.Warning("maintenance mode on: stopping core, clients cannot connect until it is turned off")
+		return s.stopCoreLocked()
+	}
+	logger.Info("maintenance mode off: starting core")
+	return s.startCoreLocked(true)
+}
+
+func (s *ConfigService) StopCore() error {
+	lifecycleMu.Lock()
+	defer lifecycleMu.Unlock()
+	return s.stopCoreLocked()
+}
+
+// stopCoreLocked stops the core. The caller must hold lifecycleMu.
+func (s *ConfigService) stopCoreLocked() error {
+	if err := corePtr.Stop(); err != nil {
+		return err
+	}
+	logger.Info("sing-box stopped")
+	return nil
+}
+
+func (s *ConfigService) CheckOutbound(tag string, link string) core.CheckOutboundResult {
+	if tag == "" {
+		return core.CheckOutboundResult{Error: "missing query parameter: tag"}
+	}
+	if corePtr == nil {
+		return core.CheckOutboundResult{Error: "core not running"}
+	}
+	return corePtr.CheckOutbound(tag, link)
+}
+
+func (s *ConfigService) Save(obj string, act string, data json.RawMessage, initUsers string, loginUser string, hostname string) (objs []string, err error) {
+	lifecycleMu.Lock()
+	defer lifecycleMu.Unlock()
+	if obj == "config" || obj == "outbounds" {
+		return s.savePolicy(obj, act, data, loginUser)
+	}
+	objs = []string{obj}
+	tx := database.GetDB().Begin()
+	if tx.Error != nil {
+		return nil, tx.Error
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			tx.Rollback()
+			panic(r)
+		}
+		if err != nil {
+			tx.Rollback()
+			return
+		}
+		if err = tx.Commit().Error; err != nil {
+			return
+		}
+		LastUpdate.Store(time.Now().Unix())
+		if !corePtr.IsRunning() {
+			err = s.startCoreLocked(false)
+		}
+	}()
+
+	switch obj {
+	case "clients":
+		var inboundIds []uint
+		inboundIds, err = s.ClientService.Save(tx, act, data, hostname)
+		if err == nil && len(inboundIds) > 0 {
+			objs = append(objs, "inbounds")
+			err = s.InboundService.UpdateInboundsUsers(tx, inboundIds)
+			if err != nil {
+				return nil, common.NewErrorf("failed to update users for inbounds: %v", err)
+			}
+		}
+	case "tls":
+		err = s.TlsService.Save(tx, act, data, hostname)
+		objs = append(objs, "clients", "inbounds")
+	case "inbounds":
+		err = s.InboundService.Save(tx, act, data, initUsers, hostname)
+		objs = append(objs, "clients")
+	case "services":
+		err = s.ServicesService.Save(tx, act, data)
+	case "endpoints":
+		err = s.EndpointService.Save(tx, act, data)
+	case "settings":
+		remarkPrefix := s.SettingService.SubRemarkPrefix(tx)
+		err = s.SettingService.Save(tx, data)
+		// Stored client links carry the remark prefix, so flipping it has to
+		// rebuild them, the way a TLS edit does.
+		if err == nil && s.SettingService.SubRemarkPrefix(tx) != remarkPrefix {
+			var inbounds []model.Inbound
+			err = tx.Model(model.Inbound{}).Preload("Tls").Find(&inbounds).Error
+			if err == nil {
+				err = s.ClientService.UpdateLinksByInboundChange(tx, &inbounds, hostname, "")
+				objs = append(objs, "clients")
+			}
+		}
+	default:
+		return nil, common.NewError("unknown object: ", obj)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	dt := time.Now().Unix()
+	err = tx.Create(&model.Changes{
+		DateTime: dt,
+		Actor:    loginUser,
+		Key:      obj,
+		Action:   act,
+		Obj:      data,
+	}).Error
+	if err != nil {
+		return nil, err
+	}
+
+	return objs, nil
+}
+
+func (s *ConfigService) CheckChanges(lu string) (bool, error) {
+	if lu == "" {
+		return true, nil
+	}
+	intLu, err := strconv.ParseInt(lu, 10, 64)
+	if err != nil {
+		return false, err
+	}
+	if LastUpdate.Load() == 0 {
+		db := database.GetDB()
+		var count int64
+		err := db.Model(model.Changes{}).Where("date_time > ?", intLu).Count(&count).Error
+		if err == nil {
+			LastUpdate.Store(time.Now().Unix())
+		}
+		return count > 0, err
+	}
+	return LastUpdate.Load() > intLu, nil
+}
+
+func (s *ConfigService) GetChanges(actor string, chngKey string, count string) []model.Changes {
+	c, _ := strconv.Atoi(count)
+	db := database.GetDB()
+	tx := db.Model(model.Changes{}).Where("`id` > 0")
+	if len(actor) > 0 {
+		tx = tx.Where("`actor` = ?", actor)
+	}
+	if len(chngKey) > 0 {
+		tx = tx.Where("`key` = ?", chngKey)
+	}
+	var chngs []model.Changes
+	err := tx.Order("`id` desc").Limit(c).Scan(&chngs).Error
+	if err != nil {
+		logger.Warning(err)
+	}
+	return chngs
+}
