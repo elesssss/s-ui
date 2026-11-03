@@ -29,10 +29,10 @@ jobs:
           cache-dependency-path: third_party/veepin/go.sum
       - name: Check patch formatting
         run: |
-          test -z "$(gofmt -l third_party/veepin/internal/ikev1/ikuai*.go third_party/veepin/internal/cryptoutil/modp3072_test.go)"
+          test -z "$(gofmt -l third_party/veepin/internal/ikev1/ikuai*.go third_party/veepin/internal/ikev1/diagnostics*.go third_party/veepin/l2tp/server_udp_linux_test.go third_party/veepin/internal/cryptoutil/modp3072_test.go)"
       - name: Test L2TP dependency
         working-directory: third_party/veepin
         run: go test -mod=readonly -count=1 ./internal/cryptoutil ./internal/ikev1 ./internal/l2tp ./l2tp
       - name: Check compatibility changes for races
         working-directory: third_party/veepin
-        run: go test -mod=readonly -race -count=1 -run 'TestIKuai|TestMODP3072' ./internal/cryptoutil ./internal/ikev1
+        run: go test -mod=readonly -race -count=1 -run 'TestIKuai|TestMODP3072|TestRetransmitDiagnostics|TestInitialSendError|TestTimeoutWithoutSendError|TestIKESendFailure|TestTunnelSourceNATDiagnostic|TestServerWildcard|TestIKERepliesFollowObservedTransport' ./internal/cryptoutil ./internal/ikev1 ./internal/l2tp ./l2tp

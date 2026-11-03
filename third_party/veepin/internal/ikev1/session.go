@@ -303,6 +303,7 @@ type Session struct {
 	timer           *time.Timer
 	timerGeneration uint64
 	retries         int
+	lastSendError   error // diagnostics only; never changes the retry budget
 }
 
 // InitiatorCookie extracts the initiator cookie that opens every ISAKMP header.
@@ -398,7 +399,7 @@ func (s *Session) HandleInboundAuthenticated(pkt []byte, authenticated func()) {
 	// is plaintext even while we are now awaiting encrypted MM5. Replaying a
 	// cached reply never authorizes an endpoint change or resets the deadline.
 	if len(s.lastSent) != 0 && bytes.Equal(pkt, s.lastReceived) {
-		_ = s.cfg.Send(s.lastSent, s.lastSentNATT)
+		s.resendLast("duplicate request")
 		return
 	}
 	if s.state != stInit {
@@ -521,8 +522,13 @@ func (s *Session) transmit(msg []byte) error {
 	s.lastSent = msg
 	s.lastSentNATT = s.floated
 	s.retries = 0
+	s.lastSendError = nil
 	s.armTimer()
-	return s.cfg.Send(msg, s.floated)
+	if err := s.cfg.Send(msg, s.floated); err != nil {
+		s.lastSendError = err
+		return fmt.Errorf("ikev1: initial send failed (cookie=%x, waiting=%s): %w", s.initCookie, s.state, err)
+	}
+	return nil
 }
 
 func (s *Session) armTimer() {
@@ -542,13 +548,30 @@ func (s *Session) onRetransmitGeneration(generation uint64) {
 	}
 	s.retries++
 	if s.retries > ikeMaxRetransmits {
-		s.failLocked(fmt.Errorf("ikev1: exchange timed out"))
+		err := fmt.Errorf("ikev1: exchange timed out (cookie=%x, waiting=%s, natt=%v, retries=%d)", s.initCookie, s.state, s.lastSentNATT, ikeMaxRetransmits)
+		if s.lastSendError != nil {
+			err = fmt.Errorf("%w; last send error: %w", err, s.lastSendError)
+		}
+		s.failLocked(err)
 		return
 	}
-	_ = s.cfg.Send(s.lastSent, s.lastSentNATT)
+	s.resendLast("timer")
 	s.timerGeneration++
 	generation = s.timerGeneration
 	s.timer = time.AfterFunc(ikeRetransmitInterval, func() { s.onRetransmitGeneration(generation) })
+}
+
+// resendLast preserves the exact ciphertext/IV and bounded retry policy. A UDP
+// send failure used to disappear here, leaving only an unexplained timeout.
+// Report the first failure per transmitted message to avoid duplicate-log floods.
+// Caller holds mu.
+func (s *Session) resendLast(reason string) {
+	if err := s.cfg.Send(s.lastSent, s.lastSentNATT); err != nil {
+		if s.lastSendError == nil {
+			s.logger.Warnf("ikev1: retransmit send failed (cookie=%x, waiting=%s, reason=%s): %v", s.initCookie, s.state, reason, err)
+		}
+		s.lastSendError = err
+	}
 }
 
 // advance clears the retransmit state once a message is accepted.
@@ -559,6 +582,7 @@ func (s *Session) advance() {
 		s.timer = nil
 	}
 	s.lastSent = nil
+	s.lastSendError = nil
 }
 
 func (s *Session) failLocked(err error) {

@@ -473,6 +473,9 @@ type serverPeer struct {
 	device        io.ReadWriteCloser
 	done          chan struct{}
 	admissionOnce sync.Once
+	dataSeen      bool // one diagnostic per session, never per packet
+	sourceWarned  bool
+	writeWarned   bool
 }
 
 // noteIKEAddr commits a cryptographically verified IKE packet's endpoint.
@@ -527,12 +530,18 @@ func (p *serverPeer) sendIKE(msg []byte, _ bool) error {
 	// endpoint. Reply on the transport it actually used until it floats.
 	// TunnelForge finishes MM5/MM6 on UDP/500; guessing port 4500 loses MM6
 	// behind NAT. A peer starting on 4500 also needs its MM2 sent there.
+	conn, to, packet := p.srv.ikeConn, ike, msg
 	if natt {
-		_, err := p.srv.nattConn.WriteToUDP(markIKE(msg), nat)
-		return err
+		conn, to, packet = p.srv.nattConn, nat, markIKE(msg)
 	}
-	_, err := p.srv.ikeConn.WriteToUDP(msg, ike)
-	return err
+	n, err := conn.WriteToUDP(packet, to)
+	if err == nil && n != len(packet) {
+		err = io.ErrShortWrite
+	}
+	if err != nil {
+		return fmt.Errorf("l2tp: IKE UDP send %s -> %s (NAT-T=%v, bytes=%d): %w", conn.LocalAddr(), to, natt, len(packet), err)
+	}
+	return nil
 }
 
 func (p *serverPeer) handleESP(pkt []byte, addr *net.UDPAddr) {
@@ -674,13 +683,39 @@ func (p *serverPeer) DataFrame(frame []byte) {
 		p.mu.Unlock()
 		// The authenticated peer may only send from its assigned IPv4 address.
 		// No data is admitted before both PPP authentication and IPCP complete.
-		if !ready || len(ip) < 20 || ip[0]>>4 != 4 || !net.IP(ip[12:16]).Equal(address) {
+		if !ready || len(ip) < 20 || ip[0]>>4 != 4 {
 			return
 		}
+		if !net.IP(ip[12:16]).Equal(address) {
+			p.mu.Lock()
+			warn := !p.sourceWarned
+			p.sourceWarned = true
+			p.mu.Unlock()
+			if warn && p.srv != nil {
+				p.srv.logger.Warnf("l2tp: dropping tunnel IPv4 source %s; assigned address is %s (router clients must source-NAT LAN traffic)", net.IP(ip[12:16]), address)
+			}
+			return
+		}
+		var err error
 		if device != nil {
-			_, _ = device.Write(ip)
-		} else if p.srv.tun != nil {
-			_, _ = p.srv.tun.Write(ip)
+			_, err = device.Write(ip)
+		} else if p.srv != nil && p.srv.tun != nil {
+			_, err = p.srv.tun.Write(ip)
+		} else {
+			return
+		}
+		p.mu.Lock()
+		warn, first := err != nil && !p.writeWarned, err == nil && !p.dataSeen
+		p.writeWarned = p.writeWarned || err != nil
+		p.dataSeen = p.dataSeen || err == nil
+		p.mu.Unlock()
+		if p.srv != nil {
+			if warn {
+				p.srv.logger.Warnf("l2tp: session device write failed: %v", err)
+			}
+			if first {
+				p.srv.logger.Printf("l2tp: first tunnel IPv4 packet admitted (source=%s protocol=%d)", address, ip[9])
+			}
 		}
 		return
 	}

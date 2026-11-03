@@ -16,6 +16,9 @@
 2. `internal/ikev1/{const,crypto,helpers,sa}.go` 和 `ikuai.go`：L2TP 服务端可接受 DH15，后续 IKE 更新可以复用该组；普通发起端默认提案和其他配置的算法策略不变。
 3. `ikuai.go`：只有启用 `ManageLifetime` 的 Main Mode L2TP 服务端收到 `AES-128-CBC / SHA-256 / DH15 / PSK` 时，允许零秒生命周期。运行时使用 `IKELifetime`（未指定时 3600 秒），回复仍保留原始属性；结构检查、重复属性检查、零字节生命周期拒绝、PSK/HASH 校验及过期/更新机制不变。未捕获到的 ESP 零生命周期不作推测性兼容。
 4. `ikuai_test.go` 和 `modp3072_test.go`：脱敏提案回归、模数/密钥交换测试、错误 PSK、策略隔离、非法属性和 IKE 更新测试。现有 `tunnelforge_test.go` 的握手辅助函数支持传入第一阶段提案，避免复制整套协议测试。
+5. `l2tp/server.go`：IPv4 监听地址（含 `0.0.0.0`）明确使用 `udp4`，避免默认创建 IPv6 双栈 Socket。`server_udp_linux_test.go` 校验 AF_INET 及真实单包/批量接收后的 PKTINFO 回复。此调整是收发路径的受控兼容改进，不代表已证明爱快抓包缺少 MM6 的根因。
+6. `internal/ikev1/{session,diagnostics,exchange}.go` 和 `internal/l2tp/server.go`：初次发送、重传发送错误保留原因，超时报告 cookie 和等待阶段；MM5 通过认证且 MM6 成功提交 Socket 后记录状态。日志不输出密钥、认证 HASH 或密文；重试次数、密文重放和认证逻辑不变。成功提交 Socket 不等于对端已经收到。
+7. `internal/l2tp/server.go`：每个会话只记录一次源地址不匹配警告、首次准入 IPv4 包及设备写入错误，用于区分 PPP 成功与实际数据转发。源地址限制不放宽，路由器 LAN 流量仍需源 NAT 到 PPP 地址。
 
 提案样本来自用户提供的爱快 3.7.14 抓包，仅保留公开 SA 属性。没有提交原始 PCAP、真实 IP、cookie、用户名或 PSK。第二阶段使用已有的合成 ESP 提案，不能视为爱快真实第二阶段验收。
 

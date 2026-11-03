@@ -389,6 +389,7 @@ func (s *Session) respHandleMM5(first uint8, rest []byte) error {
 	}); err != nil {
 		return err
 	}
+	s.logger.Printf("ikev1: MM5 authenticated; MM6 queued (cookie=%x, DH=%d, AES=%d, hash=%d); awaiting Quick Mode", s.initCookie, s.prop.group, s.prop.keyBits, s.prop.hash)
 	return s.afterPhase1()
 }
 

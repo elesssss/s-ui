@@ -139,11 +139,11 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 	// Two sockets: Main Mode arrives on the IKE port, and everything after the
 	// NAT-T float — IKE behind the non-ESP marker, and UDP-encapsulated ESP —
 	// arrives on 4500.
-	ikeConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: listenIP, Port: port})
+	ikeConn, err := listenServerUDP(listenIP, port)
 	if err != nil {
 		return nil, fmt.Errorf("l2tp: bind %s:%d: %w", cfg.ListenIP, port, err)
 	}
-	nattConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: listenIP, Port: nattPort})
+	nattConn, err := listenServerUDP(listenIP, nattPort)
 	if err != nil {
 		ikeConn.Close()
 		return nil, fmt.Errorf("l2tp: bind %s:%d: %w", cfg.ListenIP, nattPort, err)
@@ -170,6 +170,18 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 		Logger:              logger,
 	})
 	return &Server{eng: eng, tun: tun, pool: pool, gateway: gateway}, nil
+}
+
+// listenServerUDP binds IPv4 endpoints as AF_INET even for 0.0.0.0. Go's
+// generic "udp" listener otherwise prefers an IPv6 dual-stack socket for a
+// wildcard. L2TP's IPv4 NAT-T data path needs no implicit IPv4-mapped socket.
+// Retain explicit IPv6 bindings for callers outside S-UI.
+func listenServerUDP(ip net.IP, port int) (*net.UDPConn, error) {
+	network := "udp4"
+	if ip != nil && ip.To4() == nil {
+		network = "udp6"
+	}
+	return net.ListenUDP(network, &net.UDPAddr{IP: ip, Port: port})
 }
 
 // ListenAndServe serves clients until Close. It blocks.

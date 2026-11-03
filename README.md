@@ -28,6 +28,8 @@
 
 依赖中的 `ikuai_test.go` 使用不含地址、cookie 或密钥的提案字节作为回归样本，并包含模拟 Main/Quick Mode、错误 PSK 和 ESP 数据验证。实际爱快的第二阶段提案、PPP 拨号及长时间重协商仍需更新程序后实机验收；这些模拟测试不代表爱快已完成端到端兼容验收。客户端页面的 L2TP 端口仍填 `1701`，公网防火墙放行 UDP `500` 和 `4500`。
 
+服务端的 IPv4 UDP 500/4500 监听明确使用 IPv4 Socket，包括监听 `0.0.0.0` 时；这避免了隐式双栈 Socket，但尚不能仅凭测试认定它解决了所有爱快重拨故障。诊断日志会区分 MM5 认证、MM6 提交发送、等待 QM1/QM3 超时和 UDP 发送错误。出现 `first tunnel IPv4 packet admitted` 仅说明数据进入服务端网络栈；若出现源地址不匹配警告，应检查路由器是否将 LAN 流量源 NAT 到 PPP 地址，不能通过关闭源地址检查绕过。真实拨号、网页访问及重协商需要分别验收。
+
 **基于 SagerNet/Sing-Box 的高级 Web 管理面板**
 
 ![](https://img.shields.io/github/v/release/bryet/s-ui.svg)

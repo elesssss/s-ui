@@ -3,7 +3,9 @@ package l2tp
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -84,6 +86,24 @@ func TestIKERepliesFollowObservedTransport(t *testing.T) {
 		p.noteIKEAddr(nattAddr, true)
 		expect(t, p, false, nattClient, true) // MM2, before the engine negotiates NAT-T.
 	})
+}
+
+func TestIKESendFailureIncludesObservedEndpoint(t *testing.T) {
+	for _, natt := range []bool{false, true} {
+		conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		packetConn := dataplane.NewPacketConn(conn)
+		conn.Close()
+		peer := &net.UDPAddr{IP: net.IPv4(192, 0, 2, 1), Port: 41000}
+		p := &serverPeer{addr: peer, nattAddr: peer, ikeNATT: natt,
+			srv: &Server{ikeConn: packetConn, nattConn: packetConn}}
+		err = p.sendIKE([]byte("synthetic IKE"), natt)
+		if !errors.Is(err, net.ErrClosed) || !strings.Contains(err.Error(), peer.String()) || !strings.Contains(err.Error(), "NAT-T=") {
+			t.Fatalf("send error lost endpoint or cause: %v", err)
+		}
+	}
 }
 
 func TestUnverifiedIKECannotMoveExistingPeer(t *testing.T) {
