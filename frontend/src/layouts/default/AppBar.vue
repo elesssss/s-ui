@@ -27,22 +27,6 @@
     >
       {{ $t('setting.maintenance') }}
     </v-chip>
-    <v-btn
-      v-tooltip="$t('donate')"
-      :aria-label="$t('donate')"
-      icon
-      variant="text"
-      href="https://donate.alireza0.dev"
-      target="_blank"
-      rel="noopener"
-      class="donate-btn"
-    >
-      <v-icon
-        icon="mdi-heart"
-        color="red"
-        size="1.5em"
-      />
-    </v-btn>
     <v-menu>
       <template #activator="{ props }">
         <v-btn
