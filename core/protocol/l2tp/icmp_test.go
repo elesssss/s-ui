@@ -20,6 +20,8 @@ import (
 	tun "github.com/sagernet/sing-tun"
 	"github.com/sagernet/sing-tun/ping"
 	N "github.com/sagernet/sing/common/network"
+
+	"golang.org/x/sys/unix"
 )
 
 type icmpTestRouter struct {
@@ -219,6 +221,9 @@ func TestSessionStackICMPRealPingPort(t *testing.T) {
 	if os.Getenv("SUI_L2TP_ICMP_INTEGRATION") != "1" {
 		t.Skip("requires permission to use local ICMP sockets")
 	}
+	// Match ping.NewPort's raw-then-datagram fallback. Without either permission,
+	// socket creation errors would otherwise be hidden behind the reply timeout.
+	requireICMPTestSocket(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	logger := log.NewNOPFactory().Logger()
@@ -241,7 +246,9 @@ func TestSessionStackICMPRealPingPort(t *testing.T) {
 	// forward dispatcher; policy DNAT sends the actual ping to this host only.
 	destination := netip.MustParseAddr("198.18.0.1")
 	payload := []byte("l2tp-real-icmp")
-	d.Write(icmpTestPacket(address, destination, 8, 123, 1, payload))
+	if _, err := d.Write(icmpTestPacket(address, destination, 8, 123, 1, payload)); err != nil {
+		t.Fatalf("inject ICMP request: %v", err)
+	}
 	out := readICMPTestDevice(d)
 	select {
 	case b := <-out:
@@ -251,6 +258,24 @@ func TestSessionStackICMPRealPingPort(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("real local ping reply not delivered")
 	}
+}
+
+func requireICMPTestSocket(t *testing.T) {
+	t.Helper()
+	fd, rawErr := unix.Socket(unix.AF_INET, unix.SOCK_RAW, unix.IPPROTO_ICMP)
+	if rawErr == nil {
+		unix.Close(fd)
+		return
+	}
+	if errors.Is(rawErr, os.ErrPermission) {
+		fd, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM, unix.IPPROTO_ICMP)
+		if err == nil {
+			unix.Close(fd)
+			return
+		}
+		t.Fatalf("ICMP sockets unavailable: raw=%v, datagram=%v; run in an isolated privileged network namespace, or allow this user's group in net.ipv4.ping_group_range", rawErr, err)
+	}
+	t.Fatalf("create raw ICMP socket: %v", rawErr)
 }
 
 type icmpTestOutboundPort struct {

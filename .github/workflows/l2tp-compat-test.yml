@@ -44,6 +44,14 @@ jobs:
       - name: Check concurrent userspace stacks and routing identity
         run: go test -mod=readonly -race -tags with_gvisor -count=3 ./core/protocol/l2tp
       - name: Check real local ICMP socket forwarding
-        env:
-          SUI_L2TP_ICMP_INTEGRATION: '1'
-        run: go test -mod=readonly -tags with_gvisor -count=1 -run TestSessionStackICMPRealPingPort ./core/protocol/l2tp
+        run: |
+          set -euo pipefail
+          # Compile as the runner user; only the test binary needs ICMP privileges.
+          TEST_BINARY="$RUNNER_TEMP/l2tp-icmp.test"
+          go test -mod=readonly -tags with_gvisor -c -o "$TEST_BINARY" ./core/protocol/l2tp
+          # Keep loopback setup and privileged sockets inside a disposable namespace.
+          sudo unshare --net -- bash -euo pipefail -c '
+            ip link set lo up
+            export SUI_L2TP_ICMP_INTEGRATION=1
+            exec "$1" -test.v -test.count=1 -test.run "^TestSessionStackICMPRealPingPort$"
+          ' bash "$TEST_BINARY"
